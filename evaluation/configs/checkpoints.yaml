@@ -1,0 +1,18 @@
+version: 1
+
+base_models:
+  sd35_medium:
+    display_name: SD3.5 Medium
+    source:
+      repo_id: stabilityai/stable-diffusion-3.5-medium
+      revision: main
+
+checkpoints:
+  base_sd35:
+    display_name: SD3.5 Medium base
+    base_model: sd35_medium
+    loader: base
+    guidance_scale: 4.5
+    default_dtype: bf16
+
+# Add your own checkpoints in configs/checkpoints.local.yaml (same schema).

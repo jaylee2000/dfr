@@ -1,0 +1,11 @@
+name: ram-cuda126-toolchain
+channels:
+  - nvidia
+  - conda-forge
+  - nodefaults
+dependencies:
+  - cuda-version=12.6
+  - cuda-toolkit=12.6.0
+  - gcc_linux-64=11.4.0
+  - gxx_linux-64=11.4.0
+  - ninja=1.13.2

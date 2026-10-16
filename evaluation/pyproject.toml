@@ -1,0 +1,172 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ram-eval"
+version = "0.1.0"
+description = "Diversity and quality evaluation of SD3.5 checkpoints (RAM paper)"
+requires-python = "==3.10.*"
+license = { text = "MIT" }
+authors = [{ name = "Jeongjae Lee" }, { name = "Romeo Passaro" }, { name = "Danyal Rehman" }]
+
+# Core dependencies pinned to the versions used in the paper experiments.
+# These are CUDA builds — install on a machine with a CUDA-capable GPU.
+dependencies = [
+    # Deep-learning core
+    "torch==2.6.0",
+    "torchvision==0.21.0",
+    # torch 2.6.0+cu126 requires these CUDA runtime wheels on Linux x86_64, but uv
+    # does not record them from the PyTorch index metadata, so they are declared
+    # here (same pins as the torch wheel's METADATA).
+    "nvidia-cuda-nvrtc-cu12==12.6.77",
+    "nvidia-cuda-runtime-cu12==12.6.77",
+    "nvidia-cuda-cupti-cu12==12.6.80",
+    "nvidia-cudnn-cu12==9.5.1.17",
+    "nvidia-cublas-cu12==12.6.4.1",
+    "nvidia-cufft-cu12==11.3.0.4",
+    "nvidia-curand-cu12==10.3.7.77",
+    "nvidia-cusolver-cu12==11.7.1.2",
+    "nvidia-cusparse-cu12==12.5.4.2",
+    "nvidia-cusparselt-cu12==0.6.3",
+    "nvidia-nccl-cu12==2.21.5",
+    "nvidia-nvtx-cu12==12.6.77",
+    "nvidia-nvjitlink-cu12==12.6.85",
+    # Diffusion / RL stack
+    "diffusers==0.37.0",
+    "transformers==4.57.6",
+    "accelerate==1.2.1",
+    "peft==0.18.1",
+    "safetensors>=0.4.5",
+    "huggingface-hub>=0.26",
+    "sentencepiece==0.2.0",
+    "protobuf==3.20.3",
+    # Metrics
+    "image-reward==1.5",
+    "clip==1.0",
+    "open-clip-torch==2.32.0",
+    "dreamsim==0.2.1",
+    # Utilities
+    "numpy==1.26.4",
+    "Pillow==11.1.0",
+    "PyYAML==6.0.2",
+    "wandb==0.19.8",
+]
+
+[dependency-groups]
+build = [
+    "packaging==26.2",
+    "psutil==7.2.2",
+    "setuptools==69.5.1",
+    "wheel==0.47.0",
+]
+
+[tool.uv]
+required-version = ">=0.11.28,<0.12"
+default-groups = ["build"]
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+# Freeze the first uv reproduction to the package versions exported from the
+# working CUDA 12.6 environment. Constraints do not install packages by
+# themselves; they only pin packages already present in the dependency graph.
+constraint-dependencies = [
+    "accelerate==1.2.1",
+    "aiohappyeyeballs==2.6.2",
+    "aiohttp==3.14.1",
+    "aiosignal==1.4.0",
+    "annotated-types==0.7.0",
+    "anyio==4.14.0",
+    "async-timeout==5.0.1",
+    "attrs==26.1.0",
+    "certifi==2026.6.17",
+    "charset-normalizer==3.4.7",
+    "click==8.4.1",
+    "clip==1.0",
+    "datasets==5.0.0",
+    "diffusers==0.37.0",
+    "dill==0.4.1",
+    "docker-pycreds==0.4.0",
+    "exceptiongroup==1.3.1",
+    "fairscale==0.4.13",
+    "filelock==3.29.0",
+    "frozenlist==1.8.0",
+    "fsspec==2026.4.0",
+    "ftfy==6.3.1",
+    "gitdb==4.0.12",
+    "gitpython==3.1.50",
+    "h11==0.16.0",
+    "hf-xet==1.5.1",
+    "httpcore==1.0.9",
+    "httpx==0.28.1",
+    "huggingface-hub==0.36.2",
+    "idna==3.18",
+    "image-reward==1.5",
+    "importlib-metadata==9.0.0",
+    "jinja2==3.1.6",
+    "markupsafe==3.0.3",
+    "mpmath==1.3.0",
+    "multidict==6.7.1",
+    "multiprocess==0.70.19",
+    "networkx==3.4.2",
+    "numpy==1.26.4",
+    "open-clip-torch==2.32.0",
+    "pandas==2.3.3",
+    "peft==0.18.1",
+    "pillow==11.1.0",
+    "platformdirs==4.10.0",
+    "propcache==0.5.2",
+    "protobuf==3.20.3",
+    "psutil==7.2.2",
+    "pyarrow==24.0.0",
+    "pydantic==2.13.4",
+    "pydantic-core==2.46.4",
+    "python-dateutil==2.9.0.post0",
+    "pytz==2026.2",
+    "pyyaml==6.0.2",
+    "regex==2026.5.9",
+    "requests==2.34.2",
+    "safetensors==0.8.0",
+    "scipy==1.15.3",
+    "sentencepiece==0.2.0",
+    "sentry-sdk==2.63.0",
+    "setproctitle==1.3.7",
+    "setuptools==69.5.1",
+    "six==1.17.0",
+    "smmap==5.0.3",
+    "sympy==1.13.1",
+    "timm==0.6.13",
+    "tokenizers==0.22.2",
+    "torch==2.6.0+cu126",
+    "torchvision==0.21.0+cu126",
+    "tqdm==4.68.3",
+    "transformers==4.57.6",
+    "typing-extensions==4.15.0",
+    "typing-inspection==0.4.2",
+    "tzdata==2026.2",
+    "urllib3==2.7.0",
+    "wandb==0.19.8",
+    "wcwidth==0.8.1",
+    "xxhash==3.7.0",
+    "yarl==1.24.2",
+    "zipp==4.1.0",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu126" }
+torchvision = { index = "pytorch-cu126" }
+clip = { git = "https://github.com/openai/CLIP.git", rev = "d05afc436d78f1c48dc0dbf8e5980a9d471f35f6" }
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[tool.setuptools.packages.find]
+include = ["ram_eval*"]
+
+[tool.black]
+line-length = 120
+skip-magic-trailing-comma = true
+
+[tool.isort]
+profile = "black"
+line_length = 120

@@ -1,0 +1,48 @@
+# Local overrides and secrets
+.env
+.env.*
+!.env.example
+local.env
+local.env.*
+!local.env.example
+configs/checkpoints.local.yaml
+
+# Python/editor caches
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Local/editor history
+.history/
+
+# Generated evaluation artifacts
+/images/
+/images_smoke/
+/metrics/
+/checkpoint_cache/
+/manifests/
+/manifests_smoke/images/
+
+# Downloaded/vendor model artifacts
+/models/
+*.ckpt
+*.pth
+*.pt
+*.bin
+*.safetensors
+*.onnx
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+
+# Local reference/output files
+*.tmp
+*.log
+slurm-*.out
+slurm-*.err

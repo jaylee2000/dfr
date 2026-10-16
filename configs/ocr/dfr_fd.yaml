@@ -1,0 +1,16 @@
+# DFR-FD on OCR (paper Table 2): Frechet distance to the base model in three feature
+# spaces, phi=0.09, beta=4. fd_scale = phi / s_w with s_w = 0.799 calibrated for OCR
+# (paper Appendix, "Calibration of the FD coefficient"); the space weights are shared with GenEval.
+# Prepare the FD reference first: python scripts/fd_prepare.py ocr/dfr_fd
+# Override per run, e.g.:
+#   accelerate launch scripts/training_sd3.py ocr/dfr_fd --seed 1
+extends: ../defaults/ocr_sd3.yaml
+
+reverse_kl_weight: 4.0
+
+fd_scale: 0.1126408
+fd_train_types: [convnextv2_base, siglip2_so400m, clip_vitl14]
+fd_train_weights: [1.412, 0.662, 1.278]
+
+# Per-process batch sizes.
+sampling_batch_size: 24

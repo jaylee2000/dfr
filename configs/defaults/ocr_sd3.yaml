@@ -1,0 +1,77 @@
+# SD3.5 Medium + RAM, visual text rendering (OCR).
+
+model_name: stabilityai/stable-diffusion-3.5-medium
+mixed_precision: fp16
+seed: 0
+
+# W&B logging is off unless wandb_project is set, e.g.
+#   --wandb_project ram --wandb_entity <your-team>
+# (wandb also reads WANDB_ENTITY and WANDB_API_KEY from the environment).
+wandb_project: null
+wandb_entity: null
+
+# Reward
+prompts: ocr
+rewards: [OCR]
+validation_rewards: [ImageReward]
+reward_multiplier: 100
+num_integral_kl_timesteps: 0
+integral_kl_timestep_distribution: uniform # options: uniform | linear_low_bias
+integral_kl_weight: 0.0
+reverse_kl_weight: 1.0
+scale_rewards: epoch        # options: group | epoch | none
+eval_every_n_epochs: 10
+
+# Diffusion / sampling
+resolution: 512
+num_train_inference_steps: 20
+num_eval_inference_steps: 40
+train_guidance_scale: 2.0
+eval_guidance_scales: [1.0, 2.0, 3.0, 4.5]
+eval_prompt_fraction: 1.0
+timestep_sampling: weighted # options: weighted | uniform | train | eval
+min_timesteps: 400          # used only by uniform sampling
+
+# LoRA
+lora_rank: 32
+lora_alpha: 64
+
+# Epoch sizes (totals across all processes — keep fixed to reproduce the
+# paper on any cluster size; per-process sizes are derived at runtime).
+num_prompts_per_epoch: 48
+num_samples_per_prompt: 24
+num_loss_targets_per_sample: 8
+num_optim_steps_per_epoch: 1
+
+# Per-process batch sizes (set by GPU memory, not by experiment).
+loss_batch_size: 16
+sampling_batch_size: 32
+reward_batch_size: 12
+
+# Optimization
+lr: 3.e-4
+weight_decay: 1.e-4
+beta1: 0.9
+beta2: 0.99
+ema_decay: 0.9
+ema_warmup_rate: 0.01
+
+# Monitoring
+
+# Diagnostic diversity + FD logging. These keys are logging-only: they never
+# enter the advantage (that depends on dreamsim_scale / fd_scale), so historical
+# runs reproduce their science regardless. Kept on by default so any re-run
+# records diversity across all metrics.
+dreamsim_log_types: ["dino_vitb16_patch", "clip_vitb32", "open_clip_vitb32", "ensemble"]
+dreamsim_log_every_n_epochs: 1
+dreamsim_eval_num_prompts: 32
+dreamsim_eval_samples_per_prompt: 8
+dreamsim_eval_guidance_scale: 2
+# All six FD encoders. Trained encoders are logged automatically; the log-only
+# ones must be named here (e.g. dinov2/inception/mae for a convnext/siglip/clip
+# run), so the default lists all six and FD-training experiments need not add them.
+fd_log_types: ["convnextv2_base", "siglip2_so400m", "clip_vitl14", "dinov2_vitl14", "inception_v3", "mae_vitl16"]
+fd_log_every_n_epochs: 1
+# The FD reference samples (base-model images) use their own fixed seed, so all
+# training seeds and configs of a task share one reference set, generated once.
+fd_reference_seed: 0

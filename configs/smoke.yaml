@@ -1,0 +1,24 @@
+# Tiny end-to-end check, not a paper setting: one training epoch, one
+# validation pass and a checkpoint on one GPU. Covers SD3.5 sampling, the
+# GenEval reward (MMCV/MMDetection), ImageReward validation and DreamSim.
+# FD logging is off, so no FD reference set is needed.
+#   accelerate launch --num_processes 1 scripts/training_sd3.py smoke --stop_after_epoch 1
+extends: defaults/geneval_sd3.yaml
+
+num_prompts_per_epoch: 4
+num_samples_per_prompt: 8
+
+sampling_batch_size: 8
+loss_batch_size: 8
+reward_batch_size: 8
+dreamsim_batch_size: 8
+
+eval_every_n_epochs: 1
+eval_prompt_fraction: 0.005     # 11 of the 2,212 GenEval test prompts
+eval_guidance_scales: [4.5]
+
+dreamsim_log_types: [dino_vitb16_patch]
+dreamsim_eval_num_prompts: 4
+dreamsim_eval_samples_per_prompt: 4
+
+fd_log_every_n_epochs: 0

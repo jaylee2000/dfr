@@ -1,0 +1,9 @@
+# RAM baseline on OCR (paper Table 2, RAM beta=2).
+# Override per run, e.g.:
+#   accelerate launch scripts/training_sd3.py ocr/ram --seed 1 --reverse_kl_weight 4
+extends: ../defaults/ocr_sd3.yaml
+
+reverse_kl_weight: 2.0
+
+# Per-process batch sizes.
+sampling_batch_size: 24

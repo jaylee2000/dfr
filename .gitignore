@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.ram-shared/
+.uv-cache/
+
+# Editors
+.vscode/
+.idea/
+.DS_Store
+
+# Project artefacts
+models/
+models
+checkpoints/
+logs/
+outputs/
+outputs
+wandb/
+wandb
+*.pth
+*.safetensors
+*.bin
+
+# Installer caches and logs
+pip-log.txt
+pip-wheel-metadata/
+mmcv-artifact-*.out
+slurm-*.out
+*.log
+
+# Stray job files at the repository root; scripts/slurm/ is tracked.
+/*.sbatch
+
+# docs
+docs/oscillation/
+
+.history/
+
+# Local settings
+.env
