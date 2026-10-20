@@ -5,11 +5,11 @@ import os
 import urllib.request
 from pathlib import Path
 
-import fd_encoders
-from prefetch_dreamsim_models import prefetch_dreamsim_models
+from dfr import fd_encoders
+from tools.download.prefetch_dreamsim_models import prefetch_dreamsim_models
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 # Training and the reward models read model files from <repo>/models.
 MODELS = REPO_ROOT / "models"
 MASK2FORMER_NAME = "mask2former_swin-s-p4-w7-224_8xb2-lsj-50e_coco_20220504_001756-c9d0c4f2.pth"
@@ -68,7 +68,7 @@ def main():
     gc.collect()
 
     print("[4/6] ImageReward v1.0")
-    from reward_models.image_reward import rm_load
+    from dfr.reward_models.image_reward import rm_load
 
     image_reward = rm_load()
     del image_reward

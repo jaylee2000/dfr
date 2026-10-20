@@ -1,9 +1,9 @@
 # DFR-FD on GenEval (paper Table 1): Frechet distance to the base model in three feature
 # spaces, phi=0.07, beta=2. fd_scale = phi / s_w with s_w = 2.1617 calibrated for GenEval
 # (paper Appendix, "Calibration of the FD coefficient"); weights equalize the three spaces.
-# Prepare the FD reference first: python scripts/fd_prepare.py geneval/dfr_fd
+# Prepare the FD reference first: python -m dfr.fd_prepare geneval/dfr_fd
 # Override per run, e.g.:
-#   accelerate launch scripts/training_sd3.py geneval/dfr_fd --seed 1
+#   accelerate launch --module dfr.training_sd3 geneval/dfr_fd --seed 1
 extends: ../defaults/geneval_sd3.yaml
 
 reverse_kl_weight: 2.0

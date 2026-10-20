@@ -1,6 +1,6 @@
 # DFR-DS on OCR (paper Table 2): DreamSim diversity reward on the DINO branch, lambda=4, beta=5.
 # Override per run, e.g.:
-#   accelerate launch scripts/training_sd3.py ocr/dfr_ds --seed 1
+#   accelerate launch --module dfr.training_sd3 ocr/dfr_ds --seed 1
 extends: ../defaults/ocr_sd3.yaml
 
 reverse_kl_weight: 5.0

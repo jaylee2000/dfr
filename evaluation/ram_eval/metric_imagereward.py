@@ -35,7 +35,7 @@ def _build_local_tokenizer(tokenizer_path: Path):
 
 
 def _load_model(image_reward_root: Path, tokenizer_path: Path):
-    from reward_models.image_reward import rm_load
+    from dfr.reward_models.image_reward import rm_load
     from ImageReward.models.BLIP import blip_pretrain
 
     blip_pretrain.init_tokenizer = lambda: _build_local_tokenizer(tokenizer_path)

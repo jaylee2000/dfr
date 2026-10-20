@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 # Training and the reward models read model files from <repo>/models.
 MODELS = REPO_ROOT / "models"
 HF_HUB_CACHE = Path(os.environ.get("HF_HUB_CACHE", MODELS / ".huggingface" / "hub"))
@@ -58,7 +58,7 @@ def prefetch() -> None:
         )
 
     print("[4/4] ImageReward v1.0", flush=True)
-    from reward_models.image_reward import rm_load
+    from dfr.reward_models.image_reward import rm_load
 
     scorer = rm_load()
     del scorer
@@ -77,7 +77,7 @@ def verify_offline() -> None:
     ):
         snapshot_download(repo_id=repo_id, cache_dir=str(HF_HUB_CACHE), local_files_only=True)
 
-    from reward_models import ImageReward, PickScore
+    from dfr.reward_models import ImageReward, PickScore
 
     for name, scorer_type in (
         ("PickScore", PickScore),
@@ -101,7 +101,7 @@ def run_verification_subprocess() -> None:
         }
     )
     subprocess.run(
-        [sys.executable, str(Path(__file__).resolve()), "--verify-only"],
+        [sys.executable, "-m", "tools.download.prefetch_pickscore_models", "--verify-only"],
         check=True,
         cwd=REPO_ROOT,
         env=env,

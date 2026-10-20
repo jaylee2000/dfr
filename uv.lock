@@ -452,6 +452,83 @@ wheels = [
 ]
 
 [[package]]
+name = "dfr"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "accelerate" },
+    { name = "clip" },
+    { name = "clip-benchmark" },
+    { name = "diffusers" },
+    { name = "dreamsim" },
+    { name = "huggingface-hub" },
+    { name = "image-reward" },
+    { name = "levenshtein" },
+    { name = "mmcv" },
+    { name = "mmdet" },
+    { name = "mmengine" },
+    { name = "numpy" },
+    { name = "open-clip-torch" },
+    { name = "paddleocr" },
+    { name = "paddlepaddle-gpu" },
+    { name = "peft" },
+    { name = "pillow" },
+    { name = "protobuf" },
+    { name = "pyyaml" },
+    { name = "safetensors" },
+    { name = "sentencepiece" },
+    { name = "torch" },
+    { name = "torchvision" },
+    { name = "transformers" },
+    { name = "wandb" },
+]
+
+[package.dev-dependencies]
+build = [
+    { name = "packaging" },
+    { name = "psutil" },
+    { name = "setuptools" },
+    { name = "wheel" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "accelerate", specifier = "==1.2.1" },
+    { name = "clip", git = "https://github.com/openai/CLIP.git?rev=d05afc436d78f1c48dc0dbf8e5980a9d471f35f6" },
+    { name = "clip-benchmark", specifier = "==1.6.2" },
+    { name = "diffusers", specifier = "==0.37.0" },
+    { name = "dreamsim", specifier = "==0.2.1" },
+    { name = "huggingface-hub", specifier = ">=0.26" },
+    { name = "image-reward", specifier = "==1.5" },
+    { name = "levenshtein", specifier = "==0.27.3" },
+    { name = "mmcv", specifier = "==2.1.0" },
+    { name = "mmdet", specifier = "==3.3.0" },
+    { name = "mmengine", specifier = "==0.10.7" },
+    { name = "numpy", specifier = "==1.26.4" },
+    { name = "open-clip-torch", specifier = "==2.32.0" },
+    { name = "paddleocr", specifier = "==2.9.1" },
+    { name = "paddlepaddle-gpu", specifier = "==3.3.1", index = "https://www.paddlepaddle.org.cn/packages/stable/cu126/" },
+    { name = "peft", specifier = "==0.18.1" },
+    { name = "pillow", specifier = "==11.1.0" },
+    { name = "protobuf", specifier = "==3.20.3" },
+    { name = "pyyaml", specifier = "==6.0.2" },
+    { name = "safetensors", specifier = ">=0.4.5" },
+    { name = "sentencepiece", specifier = "==0.2.0" },
+    { name = "torch", specifier = "==2.6.0", index = "https://download.pytorch.org/whl/cu126" },
+    { name = "torchvision", specifier = "==0.21.0", index = "https://download.pytorch.org/whl/cu126" },
+    { name = "transformers", specifier = "==4.57.6" },
+    { name = "wandb", specifier = "==0.19.8" },
+]
+
+[package.metadata.requires-dev]
+build = [
+    { name = "packaging", specifier = "==26.2" },
+    { name = "psutil", specifier = "==7.2.2" },
+    { name = "setuptools", specifier = "==69.5.1" },
+    { name = "wheel", specifier = "==0.47.0" },
+]
+
+[[package]]
 name = "diffusers"
 version = "0.37.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1509,83 +1586,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/54/ed/79a089b6be93607fa
 wheels = [
     { url = "https://files.pythonhosted.org/packages/6b/4e/1523cb902fd98355e2e9ea5e5eb237cbc5f3ad5f3075fa65087aa0ecb669/PyYAML-6.0.2-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:ec031d5d2feb36d1d1a24380e4db6d43695f3748343d99434e6f5f9156aaa2ed", size = 751239, upload-time = "2024-08-06T20:31:52.292Z" },
     { url = "https://files.pythonhosted.org/packages/5c/20/8347dcabd41ef3a3cdc4f7b7a2aff3d06598c8779faa189cdbf878b626a4/PyYAML-6.0.2-cp310-cp310-musllinux_1_1_x86_64.whl", hash = "sha256:23502f431948090f597378482b4812b0caae32c22213aecf3b55325e049a6c68", size = 720527, upload-time = "2024-08-06T20:31:55.565Z" },
-]
-
-[[package]]
-name = "ram"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "accelerate" },
-    { name = "clip" },
-    { name = "clip-benchmark" },
-    { name = "diffusers" },
-    { name = "dreamsim" },
-    { name = "huggingface-hub" },
-    { name = "image-reward" },
-    { name = "levenshtein" },
-    { name = "mmcv" },
-    { name = "mmdet" },
-    { name = "mmengine" },
-    { name = "numpy" },
-    { name = "open-clip-torch" },
-    { name = "paddleocr" },
-    { name = "paddlepaddle-gpu" },
-    { name = "peft" },
-    { name = "pillow" },
-    { name = "protobuf" },
-    { name = "pyyaml" },
-    { name = "safetensors" },
-    { name = "sentencepiece" },
-    { name = "torch" },
-    { name = "torchvision" },
-    { name = "transformers" },
-    { name = "wandb" },
-]
-
-[package.dev-dependencies]
-build = [
-    { name = "packaging" },
-    { name = "psutil" },
-    { name = "setuptools" },
-    { name = "wheel" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "accelerate", specifier = "==1.2.1" },
-    { name = "clip", git = "https://github.com/openai/CLIP.git?rev=d05afc436d78f1c48dc0dbf8e5980a9d471f35f6" },
-    { name = "clip-benchmark", specifier = "==1.6.2" },
-    { name = "diffusers", specifier = "==0.37.0" },
-    { name = "dreamsim", specifier = "==0.2.1" },
-    { name = "huggingface-hub", specifier = ">=0.26" },
-    { name = "image-reward", specifier = "==1.5" },
-    { name = "levenshtein", specifier = "==0.27.3" },
-    { name = "mmcv", specifier = "==2.1.0" },
-    { name = "mmdet", specifier = "==3.3.0" },
-    { name = "mmengine", specifier = "==0.10.7" },
-    { name = "numpy", specifier = "==1.26.4" },
-    { name = "open-clip-torch", specifier = "==2.32.0" },
-    { name = "paddleocr", specifier = "==2.9.1" },
-    { name = "paddlepaddle-gpu", specifier = "==3.3.1", index = "https://www.paddlepaddle.org.cn/packages/stable/cu126/" },
-    { name = "peft", specifier = "==0.18.1" },
-    { name = "pillow", specifier = "==11.1.0" },
-    { name = "protobuf", specifier = "==3.20.3" },
-    { name = "pyyaml", specifier = "==6.0.2" },
-    { name = "safetensors", specifier = ">=0.4.5" },
-    { name = "sentencepiece", specifier = "==0.2.0" },
-    { name = "torch", specifier = "==2.6.0", index = "https://download.pytorch.org/whl/cu126" },
-    { name = "torchvision", specifier = "==0.21.0", index = "https://download.pytorch.org/whl/cu126" },
-    { name = "transformers", specifier = "==4.57.6" },
-    { name = "wandb", specifier = "==0.19.8" },
-]
-
-[package.metadata.requires-dev]
-build = [
-    { name = "packaging", specifier = "==26.2" },
-    { name = "psutil", specifier = "==7.2.2" },
-    { name = "setuptools", specifier = "==69.5.1" },
-    { name = "wheel", specifier = "==0.47.0" },
 ]
 
 [[package]]

@@ -1,6 +1,6 @@
 # DFR-DS on GenEval (paper Table 1): DreamSim diversity reward on the DINO branch, lambda=3, beta=2.
 # Override per run, e.g.:
-#   accelerate launch scripts/training_sd3.py geneval/dfr_ds --seed 1
+#   accelerate launch --module dfr.training_sd3 geneval/dfr_ds --seed 1
 extends: ../defaults/geneval_sd3.yaml
 
 reverse_kl_weight: 2.0

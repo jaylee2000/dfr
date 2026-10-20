@@ -30,8 +30,8 @@ groupmates without changing the prompt group's mean advantage.
 Training uses the DINO ViT-B/16 patch branch without per-group gating.
 
 Because this reward is a group-level quantity it cannot be expressed through the
-per-sample ``reward_models.Reward`` interface, so it lives here rather than in
-``reward_models``.
+per-sample ``dfr.reward_models.Reward`` interface, so it lives here rather than in
+``dfr.reward_models``.
 """
 
 import hashlib

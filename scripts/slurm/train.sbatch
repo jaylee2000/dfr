@@ -31,7 +31,7 @@ if [[ -f .env ]]; then
     source .env
     set +a
 fi
-source scripts/cuda126_env.sh
+source tools/install/cuda126_env.sh
 export PYTHONUNBUFFERED=1  # stream training output to the Slurm log
 
 num_gpus="${SLURM_GPUS_ON_NODE:-$(nvidia-smi --list-gpus | wc -l)}"
@@ -42,4 +42,4 @@ fi
 
 echo "job=${SLURM_JOB_ID} node=$(hostname) gpus=${num_gpus} config=${config}"
 srun --ntasks=1 uv run --no-sync -- \
-    accelerate launch "${launch_args[@]}" scripts/training_sd3.py "${config}" "$@"
+    accelerate launch "${launch_args[@]}" --module dfr.training_sd3 "${config}" "$@"

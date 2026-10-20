@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${repo_root}"
 
 if ! command -v uv >/dev/null 2>&1; then
@@ -16,9 +16,9 @@ fi
 export RAM_SHARED_ROOT="${RAM_SHARED_ROOT:-${repo_root}/.ram-shared}"
 mkdir -p "${RAM_SHARED_ROOT}/environments" "${RAM_SHARED_ROOT}/locks" "${RAM_SHARED_ROOT}/tmp" "${RAM_SHARED_ROOT}/uv-cache"
 
-scripts/ensure_cuda126_toolchain.sh
-# shellcheck source=scripts/cuda126_env.sh
-source "${repo_root}/scripts/cuda126_env.sh"
+tools/install/ensure_cuda126_toolchain.sh
+# shellcheck source=tools/install/cuda126_env.sh
+source "${repo_root}/tools/install/cuda126_env.sh"
 unset VIRTUAL_ENV
 
 environment_id="$(basename "${UV_PROJECT_ENVIRONMENT}")"
@@ -59,12 +59,12 @@ else
     toolchain_lock="${RAM_SHARED_ROOT}/conda-cuda126-linux-64.lock"
 fi
 
-wheel_path="$("${UV_PROJECT_ENVIRONMENT}/bin/python" scripts/mmcv_artifact.py verify \
+wheel_path="$("${UV_PROJECT_ENVIRONMENT}/bin/python" tools/install/mmcv_artifact.py verify \
     --bundle "${bundle_dir}" \
     --toolchain-lock "${toolchain_lock}")"
 uv pip install --python "${UV_PROJECT_ENVIRONMENT}/bin/python" --no-deps --reinstall "${wheel_path}"
 
-"${UV_PROJECT_ENVIRONMENT}/bin/python" scripts/validate_cuda126.py
+"${UV_PROJECT_ENVIRONMENT}/bin/python" tools/install/validate_cuda126.py
 
 marker_tmp="${marker}.tmp.$$"
 {

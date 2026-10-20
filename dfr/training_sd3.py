@@ -3,7 +3,7 @@
 This is the main entry point for the text-to-image experiments in the paper.
 Launch with ``accelerate launch``::
 
-    accelerate launch scripts/training_sd3.py geneval/ram
+    accelerate launch --module dfr.training_sd3 geneval/ram
 
 The first positional argument names a config under ``configs/`` without the
 ``.yaml`` suffix (``geneval/ram`` is ``configs/geneval/ram.yaml``). Outputs
@@ -29,22 +29,22 @@ from accelerate.utils import InitProcessGroupKwargs, broadcast
 from diffusers.pipelines.stable_diffusion_3 import StableDiffusion3Pipeline
 from peft import LoraConfig, get_peft_model
 
-import reward_models as rewards_module
-from batch_sampler import PromptSeedBatchSampler
-from config_loader import load_config, validate_training_options
-from distributed_metrics import (
+import dfr.reward_models as rewards_module
+from dfr.batch_sampler import PromptSeedBatchSampler
+from dfr.config_loader import load_config, validate_training_options
+from dfr.distributed_metrics import (
     reduce_masked_means,
     reduce_max,
     reduce_scalar_dict,
     reduce_tensor_means,
 )
-import dreamsim_diversity
-import energy_scoring
-import fd_encoders
-import fd_reference
-import fd_reward
-from generation import generate_images, sampling_batch_size
-from loss_utils import adapter_host, model_forward
+from dfr import dreamsim_diversity
+from dfr import energy_scoring
+from dfr import fd_encoders
+from dfr import fd_reference
+from dfr import fd_reward
+from dfr.generation import generate_images, sampling_batch_size
+from dfr.loss_utils import adapter_host, model_forward
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -1238,7 +1238,7 @@ def main(config, output_dir, resume_from_checkpoint=None, stop_after_epoch=None)
     # FD reference statistics are rebuilt from the prepared cache on every
     # start (they are not checkpointed); each space's moments are warm-started
     # from the same features on a fresh run so G = 0 exactly at epoch zero.
-    # Training never generates the reference: scripts/fd_prepare.py does, once.
+    # Training never generates the reference: dfr.fd_prepare does, once.
     fd_term = None
     if fd_enabled:
         names = fd_spaces.names

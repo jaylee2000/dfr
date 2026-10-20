@@ -64,7 +64,7 @@ def main():
     import peft  # noqa: F401
     import transformers  # noqa: F401
     import wandb  # noqa: F401
-    import reward_models  # noqa: F401
+    import dfr.reward_models  # noqa: F401
 
     print("CUDA 12.6 environment validation passed")
 
