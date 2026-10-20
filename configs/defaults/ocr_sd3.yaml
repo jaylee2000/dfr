@@ -15,9 +15,6 @@ prompts: ocr
 rewards: [OCR]
 validation_rewards: [ImageReward]
 reward_multiplier: 100
-num_integral_kl_timesteps: 0
-integral_kl_timestep_distribution: uniform # options: uniform | linear_low_bias
-integral_kl_weight: 0.0
 reverse_kl_weight: 1.0
 scale_rewards: epoch        # options: group | epoch | none
 eval_every_n_epochs: 10

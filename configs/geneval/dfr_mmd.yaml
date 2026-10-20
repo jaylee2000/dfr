@@ -7,8 +7,6 @@ extends: ../defaults/geneval_sd3.yaml
 reverse_kl_weight: 2.0
 
 energy_scale: 0.55
-energy_feature_extractor: latent
-energy_normalize_features: true
 energy_beta: 1.75
 energy_lambda: 1.0
 energy_reference_samples_per_prompt: 8

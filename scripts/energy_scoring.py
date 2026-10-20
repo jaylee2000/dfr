@@ -30,25 +30,6 @@ import math
 import torch
 from torch import nn
 
-import dreamsim_diversity
-import fd_encoders
-
-
-def resolve_feature_extractor(value):
-    """Return ``(family, name)`` for an energy feature selector."""
-    if value == "latent":
-        return "latent", None
-    if not isinstance(value, str) or ":" not in value:
-        raise ValueError("energy_feature_extractor must be 'latent', 'dreamsim:<variant>', " "or 'fd:<encoder>'")
-    family, name = value.split(":", 1)
-    if family == "dreamsim":
-        dreamsim_diversity.resolve_type(name)
-    elif family == "fd":
-        fd_encoders.resolve_fd_type(name)
-    else:
-        raise ValueError("energy_feature_extractor must be 'latent', 'dreamsim:<variant>', " "or 'fd:<encoder>'")
-    return family, name
-
 
 def _finite_nonnegative(value, key):
     if isinstance(value, bool):
@@ -82,23 +63,15 @@ def apply_energy_config_defaults(config):
             "Use energy_lambda and energy_scale instead."
         )
     defaults = {
-        "energy_feature_extractor": "latent",
-        "energy_normalize_features": True,
         "energy_beta": 1.0,
         "energy_lambda": 1.0,
         "energy_scale": 0.0,
         "energy_reference_samples_per_prompt": 0,
-        "energy_batch_size": None,
     }
     for key, value in defaults.items():
         if not hasattr(config, key):
             setattr(config, key, value)
 
-    resolve_feature_extractor(config.energy_feature_extractor)
-    if not isinstance(config.energy_normalize_features, bool):
-        raise ValueError(
-            "energy_normalize_features must be true or false, got " f"{config.energy_normalize_features!r}"
-        )
     if isinstance(config.energy_beta, bool):
         raise ValueError(f"energy_beta must be in (0, 2], got {config.energy_beta!r}")
     try:
@@ -113,15 +86,6 @@ def apply_energy_config_defaults(config):
     config.energy_reference_samples_per_prompt = _nonnegative_int(
         config.energy_reference_samples_per_prompt, "energy_reference_samples_per_prompt"
     )
-    if config.energy_batch_size is None:
-        config.energy_batch_size = config.reward_batch_size
-    if (
-        isinstance(config.energy_batch_size, bool)
-        or not isinstance(config.energy_batch_size, int)
-        or config.energy_batch_size <= 0
-    ):
-        raise ValueError("energy_batch_size must be a positive integer")
-
     if energy_is_enabled(config):
         n = config.num_samples_per_prompt
         if n < 2:
@@ -225,42 +189,23 @@ def unbiased_advantages(interaction_rewards, confinement_rewards, group_size, en
 
 
 class EnergyScorer:
-    """Feature extraction and energy advantages for one configured space."""
+    """Energy advantages in normalized terminal-latent features."""
 
-    def __init__(self, config, encoder=None):
-        self.family, self.name = resolve_feature_extractor(config.energy_feature_extractor)
-        self.encoder = encoder
-        self.normalize_features = config.energy_normalize_features
+    def __init__(self, config):
         self.beta = config.energy_beta
         self.energy_lambda = config.energy_lambda
         self.energy_scale = config.energy_scale
 
-    @property
-    def requires_images(self):
-        return self.family != "latent"
+    @torch.no_grad()
+    def embed(self, latents):
+        if latents is None:
+            raise ValueError("latent energy scoring requires terminal latents")
+        return _normalize(latents.float().flatten(start_dim=1))
 
     @torch.no_grad()
-    def embed(self, *, latents=None, images=None):
-        if self.family == "latent":
-            if latents is None:
-                raise ValueError("latent energy scoring requires terminal latents")
-            features = latents.float().flatten(start_dim=1)
-        else:
-            if images is None:
-                raise ValueError(f"{self.family} energy scoring requires decoded images")
-            if self.family == "dreamsim":
-                features = self.encoder.embed(images, normalize=False)
-            else:
-                features = self.encoder.embed(images)
-            features = features.float().flatten(start_dim=1)
-        return _normalize(features) if self.normalize_features else features
-
-    @torch.no_grad()
-    def compute_epoch(self, policy_latents, policy_images, group_size, reference_latents=None, reference_images=None):
-        policy = self.embed(latents=policy_latents, images=policy_images)
-        reference = None
-        if self.energy_scale != 0.0:
-            reference = self.embed(latents=reference_latents, images=reference_images)
+    def compute_epoch(self, policy_latents, group_size, reference_latents=None):
+        policy = self.embed(policy_latents)
+        reference = self.embed(reference_latents) if self.energy_scale != 0.0 else None
         interaction, confinement = reward_components(policy, group_size, self.beta, reference_features=reference)
         interaction_advantage, confinement_advantage = advantage_components(
             interaction,
@@ -282,25 +227,9 @@ class EnergyScorer:
         return advantages, tensors
 
 
-def build_scorer(config, device, dreamsim_scorers=None, fd_spaces=None):
-    """Build the configured scorer, reusing an already-loaded encoder."""
-    if not energy_is_enabled(config):
-        return None
-    family, name = resolve_feature_extractor(config.energy_feature_extractor)
-    encoder = None
-    if family == "dreamsim":
-        if dreamsim_scorers is not None and name in dreamsim_scorers:
-            encoder = dreamsim_scorers.scorers[name]
-        else:
-            encoder = dreamsim_diversity.DreamSimScorer(
-                name, config.dreamsim_cache_dir, config.energy_batch_size, device
-            )
-    elif family == "fd":
-        if fd_spaces is not None and name in fd_spaces.names and fd_spaces[name].encoder is not None:
-            encoder = fd_spaces[name].encoder
-        else:
-            encoder = fd_encoders.FdEncoder(name, config.fd_encoder_cache_dir, config.energy_batch_size, device)
-    return EnergyScorer(config, encoder=encoder)
+def build_scorer(config):
+    """Build the latent scorer, or ``None`` when the energy term is disabled."""
+    return EnergyScorer(config) if energy_is_enabled(config) else None
 
 
 __all__ = [
@@ -311,7 +240,6 @@ __all__ = [
     "energy_is_enabled",
     "pairwise_energy",
     "reference_seed",
-    "resolve_feature_extractor",
     "reward_components",
     "unbiased_advantages",
 ]

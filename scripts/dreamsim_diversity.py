@@ -11,7 +11,7 @@ unnormalized cosine distance, so divide its values by two before comparison.
 
 The ``latent`` variant uses final denoised latents before VAE scaling/shifting,
 flattened and unit-normalized, with ``d = ||u_i - u_j||^2 / 4``. It requires
-no image encoder and shares the reward averaging, centering, and gating below.
+no image encoder and shares the diversity averaging and centering below.
 
 Diversity is a mean over pairs of i.i.d. generations, so its expectation is
 ``E[d(g, g')]`` regardless of ``N`` -- only its variance shrinks as ``N`` grows.
@@ -27,24 +27,7 @@ Subtracting the prompt-group mean gives a zero-mean DreamSim advantage. A
 positive ``dreamsim_scale`` therefore favors samples farther from their
 groupmates without changing the prompt group's mean advantage.
 
-Once a prompt's group is *solved* -- every sample earns the same task reward --
-the task advantage is exactly zero and DreamSim would be the only signal left:
-an unbounded push to spread siblings apart along whatever the task reward does
-not price (layout, object scale, background, style).  ``dreamsim_gate`` scales
-the term per group by the task reward's within-group spread ``std_g`` so it
-fades together with the task signal instead of replacing it::
-
-    none    factor = 1                                  (unchanged behaviour)
-    solved  factor = 1[std_g > 0]                       (cliff)
-    std     factor = min(1, std_g / epoch_std)          (slope)
-
-Under ``scale_rewards: epoch`` the task advantage in group ``g`` has magnitude
-about ``std_g / epoch_std``, so the ``std`` gate holds the DreamSim-to-task
-ratio constant across groups, and the clamp keeps high-variance groups at the
-ungated strength so ``dreamsim_scale`` calibrations carry over.  The gate is
-computed from the task reward alone, before the DreamSim term is added, and it
-only touches the DreamSim term; the task advantage and the KL anchors are
-unchanged.
+Training uses the DINO ViT-B/16 patch branch without per-group gating.
 
 Because this reward is a group-level quantity it cannot be expressed through the
 per-sample ``reward_models.Reward`` interface, so it lives here rather than in
@@ -87,9 +70,6 @@ DREAMSIM_TYPES = {
 DEFAULT_DREAMSIM_TYPE = "dino_vitb16_patch"
 DIVERSITY_TYPES = (*DREAMSIM_TYPES, "latent")
 
-# How the DreamSim term is scaled per prompt group; see the module docstring.
-DREAMSIM_GATES = ("none", "solved", "std")
-
 # Population std of the task reward at or below which a group counts as
 # zero-variance ("solved").  GenEval scores are exact fractions, so identical
 # samples give exactly zero; the tolerance only guards float accumulation.
@@ -130,8 +110,6 @@ def apply_dreamsim_config_defaults(config):
     """Fill in and validate the ``dreamsim_*`` config keys."""
     defaults = {
         "dreamsim_scale": 0.0,
-        "dreamsim_train_type": DEFAULT_DREAMSIM_TYPE,
-        "dreamsim_gate": "none",
         "dreamsim_log_types": [],
         "dreamsim_log_every_n_epochs": 0,
         "dreamsim_eval_num_prompts": 0,
@@ -151,15 +129,6 @@ def apply_dreamsim_config_defaults(config):
     config.dreamsim_scale = float(config.dreamsim_scale)
     if not math.isfinite(config.dreamsim_scale):
         raise ValueError(f"dreamsim_scale must be finite, got {config.dreamsim_scale!r}")
-
-    _validate_diversity_type(config.dreamsim_train_type)
-
-    gate = config.dreamsim_gate
-    if gate is None:
-        gate = "none"
-    if not isinstance(gate, str) or gate not in DREAMSIM_GATES:
-        raise ValueError(f"dreamsim_gate must be one of {DREAMSIM_GATES}, got {gate!r}")
-    config.dreamsim_gate = gate
 
     config.dreamsim_log_types = _validate_types(
         config.dreamsim_log_types or [], "dreamsim_log_types"
@@ -257,8 +226,8 @@ def loaded_types(config):
     The trained-on variant is always included so a run logs what it optimizes.
     """
     names = list(config.dreamsim_log_types)
-    if dreamsim_reward_is_enabled(config) and config.dreamsim_train_type not in names:
-        names.insert(0, config.dreamsim_train_type)
+    if dreamsim_reward_is_enabled(config) and DEFAULT_DREAMSIM_TYPE not in names:
+        names.insert(0, DEFAULT_DREAMSIM_TYPE)
     return names
 
 
@@ -488,8 +457,8 @@ def center_by_group(values, group_size):
 def group_reward_std(rewards, group_size):
     """Population std of the task reward within each contiguous group.
 
-    Returns one value per group.  Call this on the task reward *before* the
-    DreamSim term is added so the gate never sees its own contribution.
+    Returns one value per group, computed before adding regularizer terms,
+    for the solved/unsolved diagnostics.
     """
     return rewards.view(-1, group_size).float().std(dim=1, correction=0)
 
@@ -497,28 +466,3 @@ def group_reward_std(rewards, group_size):
 def is_zero_variance(group_std):
     """Boolean mask of groups whose task reward does not vary ("solved")."""
     return group_std <= ZERO_VARIANCE_TOL
-
-
-def gate_factors(group_std, mode, epoch_std=None):
-    """Per-group multiplier in ``[0, 1]`` for the DreamSim advantage.
-
-    Args:
-        group_std: ``(num_groups,)`` task-reward std per group.
-        mode: one of ``DREAMSIM_GATES``.
-        epoch_std: scalar std of the task reward over the whole epoch (already
-            offset away from zero); required for ``mode="std"``.
-    """
-    if mode == "none":
-        return torch.ones_like(group_std)
-    if mode == "solved":
-        return (~is_zero_variance(group_std)).to(group_std.dtype)
-    if mode == "std":
-        if epoch_std is None:
-            raise ValueError("gate_factors(mode='std') needs epoch_std")
-        return (group_std / epoch_std).clamp(min=0.0, max=1.0)
-    raise ValueError(f"dreamsim_gate must be one of {DREAMSIM_GATES}, got {mode!r}")
-
-
-def expand_by_group(values, group_size):
-    """Repeat one value per group into one value per sample, in group order."""
-    return values.repeat_interleave(group_size)

@@ -18,7 +18,6 @@ import math
 import os
 import random
 import time
-from contextlib import nullcontext
 from datetime import timedelta
 from pathlib import Path
 
@@ -32,7 +31,7 @@ from peft import LoraConfig, get_peft_model
 
 import reward_models as rewards_module
 from batch_sampler import PromptSeedBatchSampler
-from config_loader import load_config
+from config_loader import load_config, validate_training_options
 from distributed_metrics import (
     reduce_masked_means,
     reduce_max,
@@ -45,16 +44,7 @@ import fd_encoders
 import fd_reference
 import fd_reward
 from generation import generate_images, sampling_batch_size
-from grad_norms import (
-    GradNormMonitor,
-    mse_vjp_surrogates,
-    ram_residual_terms,
-    should_monitor_epoch,
-    validate_monitor_interval,
-)
 from loss_utils import adapter_host, model_forward
-import sft_cache
-import sft_weights
 from vendi_diversity import grouped_vendi_scores
 
 # ---------------------------------------------------------------------------
@@ -91,34 +81,16 @@ def release_cuda_memory():
 
 
 def apply_main_loss_config(config):
-    K = config.num_integral_kl_timesteps
-    if isinstance(K, bool) or not isinstance(K, int) or K < 0:
-        raise ValueError(f"num_integral_kl_timesteps must be an integer >= 0, got {K!r}")
-    if config.integral_kl_timestep_distribution not in ("uniform", "linear_low_bias"):
-        raise ValueError(
-            "integral_kl_timestep_distribution must be 'uniform' or 'linear_low_bias', "
-            f"got {config.integral_kl_timestep_distribution!r}"
-        )
-    for name in ("integral_kl_weight", "reverse_kl_weight"):
-        value = float(getattr(config, name))
-        if not math.isfinite(value):
-            raise ValueError(f"{name} must be finite, got {value!r}")
-        setattr(config, name, value)
+    value = float(config.reverse_kl_weight)
+    if not math.isfinite(value):
+        raise ValueError(f"reverse_kl_weight must be finite, got {value!r}")
+    config.reverse_kl_weight = value
     return config
 
 
 def apply_wandb_config_defaults(config):
     if not hasattr(config, "wandb_run_name"):
         config.wandb_run_name = None
-    return config
-
-
-def apply_grad_norm_monitor_config_defaults(config):
-    if not hasattr(config, "grad_norm_monitor_every_n_epochs"):
-        config.grad_norm_monitor_every_n_epochs = 0
-    config.grad_norm_monitor_every_n_epochs = validate_monitor_interval(
-        config.grad_norm_monitor_every_n_epochs
-    )
     return config
 
 
@@ -175,48 +147,6 @@ def resolve_eval_guidance_scales(config):
 
 def resolve_wandb_run_name(config, output_dir):
     return config.wandb_run_name or output_dir.name
-
-
-def apply_sft_config_defaults(config):
-    defaults = {
-        "sft_ref_cache_dir": None,
-        "sft_loss_weight": 0.0,
-        "sft_loss_weight_fn": None,
-        "sft_num_samples_per_prompt": None,
-        "sft_num_loss_targets_per_sample": None,
-    }
-    for key, value in defaults.items():
-        if not hasattr(config, key):
-            setattr(config, key, value)
-
-    if config.sft_loss_weight is None:
-        config.sft_loss_weight = 0.0
-    config.sft_loss_weight = float(config.sft_loss_weight)
-
-    if config.sft_num_samples_per_prompt is None:
-        config.sft_num_samples_per_prompt = config.num_samples_per_prompt
-    if config.sft_num_loss_targets_per_sample is None:
-        config.sft_num_loss_targets_per_sample = config.num_loss_targets_per_sample
-    config.sft_num_samples_per_prompt = int(config.sft_num_samples_per_prompt)
-    config.sft_num_loss_targets_per_sample = int(config.sft_num_loss_targets_per_sample)
-
-    if config.sft_num_samples_per_prompt <= 0:
-        raise ValueError("sft_num_samples_per_prompt must be positive")
-    if config.sft_num_loss_targets_per_sample <= 0:
-        raise ValueError("sft_num_loss_targets_per_sample must be positive")
-    if sft_is_enabled(config) and not config.sft_ref_cache_dir:
-        raise ValueError("sft_ref_cache_dir is required when SFT regularization is enabled")
-    return config
-
-
-def sft_is_enabled(config):
-    return bool(config.sft_loss_weight_fn) or float(config.sft_loss_weight) != 0.0
-
-
-def resolve_sft_loss_weight(config, epoch):
-    if not config.sft_loss_weight_fn:
-        return float(config.sft_loss_weight)
-    return sft_weights.resolve(config.sft_loss_weight_fn, epoch, float(config.sft_loss_weight), config)
 
 
 # ---------------------------------------------------------------------------
@@ -298,58 +228,6 @@ def sample_timesteps(scheduler, config, num_samples, num_targets_per_sample, dev
     return timesteps[indices]
 
 
-def get_sample_kl(timestep, timestep_dmd, sample):
-    sigma = (timestep / 1000).view(-1, 1, 1, 1)
-    sigma_dmd = (timestep_dmd / 1000).view(-1, 1, 1, 1)
-
-    same_step = torch.isclose(
-        timestep_dmd.to(dtype=torch.float32),
-        timestep.to(dtype=torch.float32),
-        rtol=0.0,
-        atol=1e-6,
-    )
-    non_same = ~same_step
-    sample_kl = sample.clone()
-    if non_same.any().item():
-        time_ = sigma[non_same]
-        time_kl_ = sigma_dmd[non_same]
-        sample_ = sample[non_same]
-        noise_kl = torch.randn_like(sample_)
-        mu_kl = (1 - time_kl_) / (1 - time_)
-        sample_kl[non_same] = mu_kl * sample_ + torch.sqrt(
-            (1 - mu_kl) * (1 - mu_kl + 2 * mu_kl * time_)
-        ) * noise_kl
-    return sample_kl
-
-
-def sample_integral_kl_timesteps(timestep, num_integral_kl_timesteps, distribution_type):
-    """Return K independently sampled integral-KL timesteps with shape [K, batch]."""
-    if num_integral_kl_timesteps < 0:
-        raise ValueError("num_integral_kl_timesteps must be non-negative")
-    if distribution_type not in ("uniform", "linear_low_bias"):
-        raise ValueError(f"Unknown integral-KL timestep distribution: {distribution_type!r}")
-
-    dmd_low = timestep.to(dtype=torch.float32).ceil()
-    timesteps = []
-    for _ in range(num_integral_kl_timesteps):
-        if distribution_type == "uniform":
-            # Uniform integer draw from [timestep, 1000], inclusive.
-            timestep_dmd = dmd_low + torch.floor(
-                torch.rand_like(dmd_low) * (1001.0 - dmd_low).clamp_min(1.0)
-            )
-        else:
-            # Linearly decreasing density on [timestep, 1000], biased toward timestep.
-            dmd_span = (1000.0 - dmd_low).clamp_min(0.0)
-            timestep_dmd = dmd_low + torch.floor(
-                dmd_span * (1.0 - torch.sqrt(1.0 - torch.rand_like(dmd_low)))
-            )
-        timesteps.append(timestep_dmd.to(dtype=timestep.dtype))
-
-    if not timesteps:
-        return timestep.new_empty((0, *timestep.shape))
-    return torch.stack(timesteps)
-
-
 def get_target_velocity(
     model,
     sample,
@@ -363,48 +241,16 @@ def get_target_velocity(
     config,
     accelerator,
 ):
-    """Construct the RAM target from reward, integral-KL, and reverse-KL anchors."""
+    """Construct the RAM target from the reward update and reverse-KL anchor."""
     host = adapter_host(model)
-    K = config.num_integral_kl_timesteps
-    integral_kl_anchor = torch.zeros_like(velocity)
-    output_delta_norm = None
 
     with torch.no_grad():
         host.set_adapter("old")
         old_v = model_forward(model, sample, timestep, prompt_embeds, pooled_embeds, accelerator)
 
-        # The base-policy forward now also runs when the reverse-KL anchor is off,
-        # so that output_delta_norm (the drift away from the base policy) is finite
-        # in every run.  With K > 0 the integral-KL block already measures that
-        # drift and base_v is never read, so the pass is skipped there.
-        base_v = None
-        if config.reverse_kl_weight != 0.0 or K == 0:
-            host.set_adapter("default")
-            with host.disable_adapter():
-                base_v = model_forward(model, sample, timestep, prompt_embeds, pooled_embeds, accelerator)
-
-        if K > 0:
-            integral_kl_timesteps = sample_integral_kl_timesteps(
-                timestep, K, config.integral_kl_timestep_distribution
-            )
-            sample_kl = torch.cat([get_sample_kl(timestep, t_dmd, sample) for t_dmd in integral_kl_timesteps])
-            timestep_kl = integral_kl_timesteps.reshape(-1)
-            prompt_embeds_kl = torch.cat([prompt_embeds] * K)
-            pooled_embeds_kl = torch.cat([pooled_embeds] * K)
-
-            host.set_adapter("default")
-            with host.disable_adapter():
-                base_v_kl = model_forward(
-                    model, sample_kl, timestep_kl, prompt_embeds_kl, pooled_embeds_kl, accelerator
-                ).chunk(K)
-            host.set_adapter("default")
-            velocity_kl = model_forward(
-                model, sample_kl, timestep_kl, prompt_embeds_kl, pooled_embeds_kl, accelerator
-            ).chunk(K)
-            kl_deltas = [base - current for base, current in zip(base_v_kl, velocity_kl, strict=True)]
-            mean_kl_delta = torch.stack(kl_deltas).mean(dim=0)
-            integral_kl_anchor = config.integral_kl_weight * mean_kl_delta
-            output_delta_norm = torch.stack([delta.square().mean() for delta in kl_deltas]).mean().item()
+        host.set_adapter("default")
+        with host.disable_adapter():
+            base_v = model_forward(model, sample, timestep, prompt_embeds, pooled_embeds, accelerator)
 
         reverse_kl_anchor = velocity.detach()
         if config.reverse_kl_weight != 0.0:
@@ -412,10 +258,9 @@ def get_target_velocity(
 
         scaled_adv = config.reward_multiplier * advantages.view(-1, 1, 1, 1)
         reward_update = scaled_adv * ((noise - latent) - old_v)
-        target_velocity = reward_update + integral_kl_anchor + reverse_kl_anchor
+        target_velocity = reward_update + reverse_kl_anchor
 
-        if output_delta_norm is None:
-            output_delta_norm = (velocity.detach() - base_v).square().mean().item()
+        output_delta_norm = (velocity.detach() - base_v).square().mean().item()
         # Gap to the sampling policy: both tensors already exist, and the
         # difference is a transient inside no_grad.
         old_policy_delta_norm = (velocity.detach() - old_v).square().mean().item()
@@ -424,19 +269,10 @@ def get_target_velocity(
     metrics = {
         "output_delta_norm": output_delta_norm,
         "old_policy_delta_norm": old_policy_delta_norm,
-        "integral_kl_anchor_norm": integral_kl_anchor.square().mean().item(),
         "reverse_kl_anchor_norm": (velocity.detach() - reverse_kl_anchor).square().mean().item(),
-        "num_integral_kl_timesteps": K,
-        "integral_kl_weight": config.integral_kl_weight,
         "reverse_kl_weight": config.reverse_kl_weight,
     }
-    residual_terms = ram_residual_terms(
-        velocity,
-        reward_update,
-        reverse_kl_anchor,
-        integral_kl_anchor if K > 0 else None,
-    )
-    return target_velocity, metrics, residual_terms
+    return target_velocity, metrics
 
 
 def compute_main_loss(
@@ -448,7 +284,6 @@ def compute_main_loss(
     timestep,
     config,
     accelerator,
-    monitor_grad_norms=False,
 ):
     host = adapter_host(model)
     host.set_adapter("default")
@@ -457,7 +292,7 @@ def compute_main_loss(
     noise = torch.randn_like(latent)
     sample = (1 - sigma) * latent + sigma * noise  # x_t ~ q(x_t | x_0)
     velocity = model_forward(model, sample, timestep, prompt_embeds, pooled_embeds, accelerator)
-    target_velocity, target_metrics, residual_terms = get_target_velocity(
+    target_velocity, target_metrics = get_target_velocity(
         model, sample, timestep, velocity, noise, latent, prompt_embeds, pooled_embeds, advantages, config, accelerator
     )
 
@@ -483,39 +318,6 @@ def compute_main_loss(
         "velocity_target_dot": velocity_target_dot,
         **target_metrics,
     }
-    grad_terms = None
-    if monitor_grad_norms:
-        grad_terms = mse_vjp_surrogates(
-            velocity,
-            residual_terms,
-            velocity.detach() - target_velocity.detach(),
-        )
-    return loss, metrics, grad_terms
-
-
-def compute_sft_loss(model, latent, prompt_embeds, pooled_embeds, timestep, config, accelerator):
-    """Reference-SFT loss on cached endpoints forward-noised to random timesteps."""
-    host = adapter_host(model)
-    host.set_adapter("default")
-
-    sigma = (timestep / 1000).view(-1, 1, 1, 1)
-    noise = torch.randn_like(latent)
-    sample = (1 - sigma) * latent + sigma * noise
-
-    velocity = model_forward(model, sample, timestep, prompt_embeds, pooled_embeds, accelerator)
-    target_velocity = noise - latent
-    per_sample = ((velocity - target_velocity.detach()) ** 2).mean(dim=tuple(range(1, velocity.ndim)))
-
-    K = config.sft_num_loss_targets_per_sample
-    if K > 1:
-        assert per_sample.shape[0] % K == 0, "SFT loss batch size must be divisible by targets per sample"
-        per_sample = per_sample.view(-1, K).mean(dim=1)
-    loss = per_sample.mean()
-
-    metrics = {
-        "sft_target_velocity_norm": (target_velocity**2).mean().item(),
-        "sft_output_delta_norm": ((velocity - target_velocity.detach()) ** 2).mean().item(),
-    }
     return loss, metrics
 
 
@@ -529,7 +331,6 @@ def compute_energy_advantages(
     prompt_embeds,
     pooled_embeds,
     latents,
-    images,
     prompt_indices,
     neg_embeds,
     neg_pooled,
@@ -539,7 +340,7 @@ def compute_energy_advantages(
     epoch,
 ):
     """Generate optional base references and return energy advantages and metrics."""
-    reference_latents = reference_images = None
+    reference_latents = None
     if config.energy_scale > 0.0:
         if prompt_indices is None or len(prompt_indices) != prompt_embeds.shape[0]:
             raise ValueError(
@@ -554,7 +355,7 @@ def compute_energy_advantages(
             for sample_index in range(M)
         ]
         with adapter_host(pipe.transformer).disable_adapter():
-            reference_latents, reference_images = generate_images(
+            reference_latents, _ = generate_images(
                 pipe,
                 reference_embeds,
                 reference_pooled,
@@ -563,15 +364,13 @@ def compute_energy_advantages(
                 neg_pooled,
                 config,
                 accelerator,
-                decode_images=energy_scorer.requires_images,
+                decode_images=False,
                 allow_partial_batch=True,
             )
     return energy_scorer.compute_epoch(
         latents,
-        images,
         config.num_samples_per_prompt,
         reference_latents=reference_latents,
-        reference_images=reference_images,
     )
 
 
@@ -622,20 +421,18 @@ def sample_epoch(
 
     # Group-relative advantages
     G = config.num_samples_per_prompt
-    gate_mode = config.dreamsim_gate
     # One gather of the (n,) task rewards, before the DreamSim and FD terms.
-    # Its spread drives the epoch scaling and the DreamSim gate, and is logged
-    # as reward_epoch_std in every run, whatever scale_rewards says.
+    # Its spread drives epoch scaling and is logged as reward_epoch_std.
     gathered_rewards = accelerator.gather(rewards)
     adv_scalars = {
         "reward_epoch_std": gathered_rewards.detach().float().cpu().std(correction=0).item(),
     }
     epoch_std = None
-    if config.scale_rewards == "epoch" or gate_mode == "std":
+    if config.scale_rewards == "epoch":
         epoch_std = gathered_rewards.std(correction=0) + 1e-4
 
     # Task-reward spread per prompt group, taken before the DreamSim term is
-    # added: it drives the DreamSim gate and the solved/unsolved logging.
+    # added, for solved/unsolved logging.
     group_std = dreamsim_diversity.group_reward_std(rewards, G)
     zero_variance = dreamsim_diversity.is_zero_variance(group_std)
     group_mean_reward = rewards.view(-1, G).float().mean(dim=1)
@@ -652,13 +449,8 @@ def sample_epoch(
             raise ValueError("scale_rewards must be 'group', 'epoch', or 'none'")
         advantages[s:s + G] = adv
 
-    # DreamSim diversity: every configured variant is logged, and the variant
-    # named by dreamsim_train_type optionally contributes each sample's centered
-    # mean distance from its groupmates (zero-mean per group, then scaled by the
-    # dreamsim_gate factor so it fades where the task reward has no spread).
-    # Logging several variants while training on one shows whether a diversity
-    # gain is real or specific to the optimized encoder; logging diversity
-    # separately for solved and unsolved groups shows where the gate acts.
+    # Log every configured variant; the DINO patch branch contributes its
+    # group-centered mean distance when the DreamSim reward is enabled.
     dreamsim_tensors = {}
     masked_tensors = {"groups/zero_variance_mean_reward": (group_mean_reward, zero_variance)}
     if dreamsim_scorers is not None and dreamsim_diversity.dreamsim_is_active_epoch(config, epoch):
@@ -669,15 +461,10 @@ def sample_epoch(
             masked_tensors[f"dreamsim_diversity_solved/{name}"] = (diversity, zero_variance)
             masked_tensors[f"dreamsim_diversity_unsolved/{name}"] = (diversity, ~zero_variance)
         if dreamsim_diversity.dreamsim_reward_is_enabled(config):
-            _, centered = scored[config.dreamsim_train_type]
-            gate = dreamsim_diversity.gate_factors(group_std, gate_mode, epoch_std)
-            gate_per_sample = dreamsim_diversity.expand_by_group(gate, G).to(advantages.dtype)
-            dreamsim_advantages = config.dreamsim_scale * (
-                gate_per_sample * centered.to(advantages.dtype)
-            )
+            _, centered = scored[dreamsim_diversity.DEFAULT_DREAMSIM_TYPE]
+            dreamsim_advantages = config.dreamsim_scale * centered.to(advantages.dtype)
             advantages = advantages + dreamsim_advantages
             dreamsim_tensors["dreamsim_advantage_abs"] = dreamsim_advantages.abs()
-            dreamsim_tensors["dreamsim_gate_mean"] = gate
 
     # Energy scoring-rule advantage. The helper owns frozen-base reference
     # generation; the additive contribution stays explicit here.
@@ -688,7 +475,6 @@ def sample_epoch(
             prompt_embeds,
             pooled_embeds,
             latents,
-            images,
             prompt_indices,
             neg_embeds,
             neg_pooled,
@@ -1097,35 +883,6 @@ def restore_checkpoint_rng(checkpoint_dir, process_index, fallback_seed):
 # ---------------------------------------------------------------------------
 
 
-def cycled_indices(order, start, count):
-    positions = (torch.arange(count, device=order.device) + start) % len(order)
-    return order[positions]
-
-
-def build_sft_microbatch(sft_data, endpoint_indices, scheduler, config, accelerator):
-    endpoint_indices_cpu = endpoint_indices.detach().cpu()
-    prompt_indices = sft_data.endpoint_prompt_indices_cpu[endpoint_indices_cpu]
-
-    latents = sft_data.latents_cpu[endpoint_indices_cpu].to(device=accelerator.device, non_blocking=True)
-    embeds = sft_data.prompt_embeds_cpu[prompt_indices].to(device=accelerator.device, non_blocking=True)
-    pooled = sft_data.pooled_embeds_cpu[prompt_indices].to(device=accelerator.device, non_blocking=True)
-
-    K = config.sft_num_loss_targets_per_sample
-    if K > 1:
-        latents = latents.repeat_interleave(K, dim=0)
-        embeds = embeds.repeat_interleave(K, dim=0)
-        pooled = pooled.repeat_interleave(K, dim=0)
-
-    timesteps = sample_timesteps(
-        scheduler,
-        config,
-        num_samples=len(endpoint_indices_cpu),
-        num_targets_per_sample=K,
-        device=accelerator.device,
-    )
-    return latents, embeds, pooled, timesteps
-
-
 def trainable_parameters(optimizer):
     """Yield the parameters the optimizer actually updates (the LoRA weights)."""
     for group in optimizer.param_groups:
@@ -1185,7 +942,6 @@ def parameter_update_metrics(optimizer, snapshot, config):
 def train_one_epoch(
     model,
     optimizer,
-    scheduler,
     latents,
     embeds,
     pooled,
@@ -1193,9 +949,6 @@ def train_one_epoch(
     timesteps,
     config,
     accelerator,
-    sft_data=None,
-    sft_weight=0.0,
-    grad_monitor=None,
 ):
     """Run one epoch of gradient-accumulated AdamW updates and return averaged
     metrics + the summed gradient norm across optim steps.
@@ -1205,77 +958,26 @@ def train_one_epoch(
     assert N % bs == 0
     n_batches = N // bs
 
-    use_sft = sft_data is not None and float(sft_weight) != 0.0
-    if use_sft:
-        sft_K = config.sft_num_loss_targets_per_sample
-        assert bs % sft_K == 0
-        sft_endpoint_order = torch.randperm(len(sft_data), device=accelerator.device)
-        sft_endpoints_per_batch = bs // sft_K
-
     totals = {}
-    grad_totals = {}
-    num_grad_steps = 0
     grad_norm_sum = 0.0
     # CPU snapshot of the trainable parameters, for the epoch update below.
     param_snapshot = snapshot_trainable_params(optimizer)
     model.train()
-    for batch_idx, i in enumerate(range(0, N, bs)):
-        sync_context = grad_monitor.no_sync(model) if grad_monitor is not None else nullcontext()
-        with accelerator.accumulate(model), sync_context:
-            ram_loss, ram_metrics, ram_grad_terms = compute_main_loss(
+    for i in range(0, N, bs):
+        with accelerator.accumulate(model):
+            loss, metrics = compute_main_loss(
                 model, latents[i:i + bs], embeds[i:i + bs], pooled[i:i + bs],
                 advantages[i:i + bs], timesteps[i:i + bs], config, accelerator,
-                monitor_grad_norms=grad_monitor is not None,
             )
-            metrics = dict(ram_metrics)
-            metrics["ram_loss"] = ram_loss.item()
-            total_loss = metrics["ram_loss"]
-            if grad_monitor is not None:
-                grad_monitor.capture(ram_grad_terms)
-            accelerator.backward(ram_loss)
-            del ram_loss, ram_grad_terms
+            metrics["ram_loss"] = loss.item()
+            accelerator.backward(loss)
+            del loss
 
-            if use_sft:
-                sft_endpoint_idx = cycled_indices(
-                    sft_endpoint_order,
-                    batch_idx * sft_endpoints_per_batch,
-                    sft_endpoints_per_batch,
-                )
-                sft_latents, sft_embeds, sft_pooled, sft_timesteps = build_sft_microbatch(
-                    sft_data, sft_endpoint_idx, scheduler, config, accelerator
-                )
-                sft_loss, sft_metrics = compute_sft_loss(
-                    model,
-                    sft_latents,
-                    sft_embeds,
-                    sft_pooled,
-                    sft_timesteps,
-                    config,
-                    accelerator,
-                )
-                weighted_sft_loss = float(sft_weight) * sft_loss
-                if grad_monitor is not None:
-                    grad_monitor.capture({"sft_anchor": weighted_sft_loss})
-                accelerator.backward(weighted_sft_loss)
-                metrics.update(sft_metrics)
-                metrics["sft_loss"] = sft_loss.item()
-                metrics["sft_loss_weight"] = float(sft_weight)
-                total_loss += float(sft_weight) * metrics["sft_loss"]
-                del sft_latents, sft_embeds, sft_pooled, sft_timesteps, sft_loss, weighted_sft_loss
-
-            metrics["loss"] = total_loss
             if accelerator.sync_gradients:
-                if grad_monitor is None:
-                    accelerator.unscale_gradients()
-                    grad_norm_sum += torch.nn.utils.get_total_norm(
-                        [p.grad for p in model.parameters() if p.grad is not None]
-                    ).item()
-                else:
-                    step_grad_metrics = grad_monitor.finish(optimizer)
-                    grad_norm_sum += step_grad_metrics["grad_norm/combined"]
-                    for key, value in step_grad_metrics.items():
-                        grad_totals[key] = grad_totals.get(key, 0.0) + value
-                    num_grad_steps += 1
+                accelerator.unscale_gradients()
+                grad_norm_sum += torch.nn.utils.get_total_norm(
+                    [p.grad for p in model.parameters() if p.grad is not None]
+                ).item()
             optimizer.step()
             optimizer.zero_grad()
         for k, v in metrics.items():
@@ -1287,13 +989,6 @@ def train_one_epoch(
     # the first epoch's NaN cosine would be a needless NaN round trip.
     metrics.update(parameter_update_metrics(optimizer, param_snapshot, config))
     del param_snapshot
-    if grad_monitor is not None:
-        assert num_grad_steps > 0
-        grad_metrics = reduce_scalar_dict(
-            accelerator,
-            {key: value / num_grad_steps for key, value in grad_totals.items()},
-        )
-        metrics.update(grad_metrics)
     grad_norm_sum = reduce_scalar_dict(accelerator, {"grad_norm_sum": grad_norm_sum})["grad_norm_sum"]
     return metrics, grad_norm_sum
 
@@ -1341,26 +1036,19 @@ def derive_local_sizes(config, num_processes):
             f"loss_batch_size={config.loss_batch_size} must be divisible by "
             f"num_loss_targets_per_sample={config.num_loss_targets_per_sample}"
         )
-    if sft_is_enabled(config) and config.loss_batch_size % config.sft_num_loss_targets_per_sample != 0:
-        raise ValueError(
-            f"loss_batch_size={config.loss_batch_size} must be divisible by "
-            f"sft_num_loss_targets_per_sample={config.sft_num_loss_targets_per_sample}"
-        )
     grad_accum = loss_samples_local // (config.loss_batch_size * optim_steps)
     return prompts_local, samples_local, grad_accum
 
 
 def main(config, output_dir, resume_from_checkpoint=None, stop_after_epoch=None):
+    validate_training_options(config)
     config = apply_main_loss_config(config)
     config = apply_wandb_config_defaults(config)
-    config = apply_grad_norm_monitor_config_defaults(config)
     config = apply_reproducibility_config_defaults(config)
     config = apply_validation_config_defaults(config)
-    config = apply_sft_config_defaults(config)
     config = dreamsim_diversity.apply_dreamsim_config_defaults(config)
     config = fd_reward.apply_fd_config_defaults(config)
     config = energy_scoring.apply_energy_config_defaults(config)
-    sft_enabled = sft_is_enabled(config)
     fd_enabled = fd_reward.fd_is_enabled(config)
     # We need num_processes before constructing Accelerator (to compute
     # gradient_accumulation_steps from totals), so read it from the launcher.
@@ -1592,17 +1280,11 @@ def main(config, output_dir, resume_from_checkpoint=None, stop_after_epoch=None)
         torch.cuda.empty_cache()
         fd_term = fd_reward.FdTerm(fd_spaces, config)
 
-    energy_scorer = energy_scoring.build_scorer(
-        config,
-        accelerator.device,
-        dreamsim_scorers=dreamsim_scorers,
-        fd_spaces=fd_spaces,
-    )
+    energy_scorer = energy_scoring.build_scorer(config)
     if energy_scorer is not None:
         accelerator.print(
             "Energy reward: "
-            f"features={config.energy_feature_extractor}, "
-            f"normalize={config.energy_normalize_features}, beta={config.energy_beta:g}, "
+            f"normalized latents, beta={config.energy_beta:g}, "
             f"lambda={config.energy_lambda:g}, scale={config.energy_scale:g}, "
             f"references/prompt={config.energy_reference_samples_per_prompt}"
         )
@@ -1631,7 +1313,7 @@ def main(config, output_dir, resume_from_checkpoint=None, stop_after_epoch=None)
     set_adapter(model, "default")
     if fd_enabled:
         accelerator.print(
-            f"FD reference {fd_reference.fd_reference_dir(config)}; normalize={config.fd_normalize}; "
+            f"FD reference {fd_reference.fd_reference_dir(config)}; normalize=null_ratio; "
             f"EMA age {fd_spaces.age}"
         )
 
@@ -1698,7 +1380,6 @@ def main(config, output_dir, resume_from_checkpoint=None, stop_after_epoch=None)
 
         # Sample, score, build advantages
         t_start = time.time()
-        sft_weight = resolve_sft_loss_weight(config, epoch) if sft_enabled else 0.0
         train_sampler.set_epoch(epoch)
         prompt_seed_batch = next(iter(train_sampler))
 
@@ -1744,13 +1425,6 @@ def main(config, output_dir, resume_from_checkpoint=None, stop_after_epoch=None)
                 )
             )
 
-        sft_data = None
-        if sft_enabled and sft_weight != 0.0:
-            with torch.no_grad():
-                sft_data = sft_cache.sample_sft_epoch(
-                    pipe, prompts, neg_embeds, neg_pooled, config, accelerator, adapter_host
-                )
-            sample_metrics.update(reduce_scalar_dict(accelerator, sft_data.metrics, reduction="sum"))
         if accelerator.is_main_process:
             accelerator.log({f"train/{k}": v for k, v in sample_metrics.items()}, step=epoch)
 
@@ -1772,21 +1446,9 @@ def main(config, output_dir, resume_from_checkpoint=None, stop_after_epoch=None)
             device=accelerator.device,
         )
 
-        grad_monitor = None
-        if should_monitor_epoch(config.grad_norm_monitor_every_n_epochs, epoch):
-            optimizer_parameters = (
-                parameter
-                for group in optimizer.param_groups
-                for parameter in group["params"]
-            )
-            grad_monitor = GradNormMonitor(optimizer_parameters, accelerator)
-
         train_metrics, grad_norm_sum = train_one_epoch(
-            model, optimizer, pipe.scheduler, latents, embeds, pooled, advantages, timesteps, config, accelerator,
-            sft_data=sft_data, sft_weight=sft_weight, grad_monitor=grad_monitor,
+            model, optimizer, latents, embeds, pooled, advantages, timesteps, config, accelerator,
         )
-        if grad_monitor is not None:
-            grad_monitor.release()
 
         # EMA updates of the lagged adapters
         update_lagged_params(default_params, old_params, epoch + 1, config.ema_decay, config.ema_warmup_rate)
@@ -1794,8 +1456,6 @@ def main(config, output_dir, resume_from_checkpoint=None, stop_after_epoch=None)
 
         total_seconds += reduce_max(accelerator, time.time() - t_start)
         log = {f"train/{k}": v for k, v in train_metrics.items()}
-        if sft_enabled and "train/sft_loss_weight" not in log:
-            log["train/sft_loss_weight"] = sft_weight
         log["train/grad_norm"] = grad_norm_sum / config.num_optim_steps_per_epoch
         log["train/gpu_hours"] = total_seconds / 3600 * num_processes
         if accelerator.is_main_process:

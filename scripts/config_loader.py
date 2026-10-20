@@ -8,6 +8,20 @@ import yaml
 CONFIGS_DIR = Path(__file__).resolve().parents[1] / "configs"
 
 
+def validate_training_options(config):
+    """Reject removed training options, including values supplied as overrides."""
+    removed = {
+        "num_integral_kl_timesteps", "integral_kl_timestep_distribution", "integral_kl_weight",
+        "grad_norm_monitor_every_n_epochs", "dreamsim_train_type", "dreamsim_gate",
+        "energy_feature_extractor", "energy_normalize_features", "energy_batch_size",
+        "fd_normalize", "fd_norm_eps", "fd_cov_source", "fd_mean_weight", "fd_cov_weight",
+        "fd_sample_clip", "fd_realized_max", "fd_allow_small_reference",
+    }
+    names = sorted(key for key in vars(config) if key in removed or key.startswith("sft_"))
+    if names:
+        raise ValueError(f"Removed training options are no longer supported: {', '.join(names)}")
+
+
 def _inside_configs(path):
     path = path.resolve()
     try:

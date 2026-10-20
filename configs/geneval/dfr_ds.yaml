@@ -6,8 +6,6 @@ extends: ../defaults/geneval_sd3.yaml
 reverse_kl_weight: 2.0
 
 dreamsim_scale: 3.0
-dreamsim_train_type: dino_vitb16_patch
-dreamsim_gate: none
 
 # Per-process batch sizes.
 loss_batch_size: 24

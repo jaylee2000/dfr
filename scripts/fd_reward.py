@@ -6,15 +6,16 @@ through the raw feature moments ``mu_g = E[f]`` and ``M_g = E[f f^T]``.  The
 score-function identity therefore turns its gradient into an ordinary policy
 gradient whose per-sample reward is a scalar quadratic form in the feature::
 
-    r_p = -[ w_mean * 2 (mu_g - mu_r)^T f_p  +  w_cov * (f_p - mu_g)^T G (f_p - mu_g) ]
+    r_p = -[2 (mu_g - mu_r)^T f_p + u_p^T G u_p + f_p^T G f_p / N]
+    u_p = f_p - mean(f within the prompt group)
     G   = I - Sigma_r^{1/2} (Sigma_r^{1/2} Sigma_g Sigma_r^{1/2})^{-1/2} Sigma_r^{1/2}
 
-with the moments held in a per-epoch EMA warm-started from the base-model
-features.  No gradients ever flow through the encoder, and one ``d x d``
-eigendecomposition per epoch replaces a per-sample jackknife.  The numerics
-are float64, with shrinkage (and its exact-gradient correction) and a clamp
-on the spectrum of ``G``; the residual within-prompt variant carries a ``1/N``
-correction.
+The covariance matrices in ``G`` are within-prompt residual covariances. The
+``1/N`` correction accounts for each sample's contribution to its group mean.
+The moments are held in a per-epoch EMA warm-started from base-model features.
+No gradients flow through the encoder. The numerics are float64, with
+shrinkage (and its exact-gradient correction) and a clamp on the spectrum of
+``G``. Each space's reward is divided by its base-model null-FD before mixing.
 
 Layout, mirroring ``dreamsim_diversity.py``: config handling first, the pure
 float64 math (unit-testable on CPU) next, and ``FdTerm``, the per-epoch driver
@@ -31,9 +32,6 @@ from distributed_metrics import reduce_max
 from dreamsim_diversity import center_by_group
 from fd_encoders import DEFAULT_FD_TYPE, resolve_fd_type
 from vendi_diversity import grouped_vendi_scores
-
-FD_COV_SOURCES = ("residual", "pooled")
-FD_NORMALIZE_MODES = ("none", "sg_ratio", "null_ratio")
 
 
 # ---------------------------------------------------------------------------
@@ -86,17 +84,8 @@ def apply_fd_config_defaults(config):
     defaults = {
         "fd_train_types": [DEFAULT_FD_TYPE],
         "fd_train_weights": None,
-        "fd_normalize": "null_ratio",
-        "fd_norm_eps": None,
         "fd_log_types": [],
         "fd_scale": 0.0,
-        # Both off unless a config asks for them: a per-sample clip on the
-        # combined reward and a cap on the dose it adds to the advantage.
-        "fd_sample_clip": None,
-        "fd_realized_max": None,
-        "fd_mean_weight": 1.0,
-        "fd_cov_weight": 1.0,
-        "fd_cov_source": "residual",
         "fd_ema_beta": 0.95,
         "fd_init_epochs": 25,
         "fd_shrinkage": 0.02,
@@ -109,9 +98,6 @@ def apply_fd_config_defaults(config):
         "fd_encoder_cache_dir": "models/fd_encoders",
         "fd_batch_size": None,
         "fd_reference_seed": None,
-        # Smoke tests only: relax the sample-count check on the reference pass.
-        # Refused when the reward term is on.
-        "fd_allow_small_reference": False,
     }
     for key, value in defaults.items():
         if not hasattr(config, key) or (key.endswith("_types") and getattr(config, key) is None):
@@ -135,28 +121,9 @@ def apply_fd_config_defaults(config):
     ]
     if all(w == 0.0 for w in config.fd_train_weights):
         raise ValueError("fd_train_weights must not all be zero")
-    if config.fd_normalize not in FD_NORMALIZE_MODES:
-        raise ValueError(f"fd_normalize must be one of {FD_NORMALIZE_MODES}, got {config.fd_normalize!r}")
-    if config.fd_norm_eps is not None:
-        config.fd_norm_eps = _finite_float(config.fd_norm_eps, "fd_norm_eps", minimum=0.0)
-
     if config.fd_scale is None:
         config.fd_scale = 0.0
     config.fd_scale = _finite_float(config.fd_scale, "fd_scale")
-    if config.fd_sample_clip is not None:
-        config.fd_sample_clip = _finite_float(
-            config.fd_sample_clip, "fd_sample_clip", exclusive_minimum=0.0
-        )
-    if config.fd_realized_max is not None:
-        config.fd_realized_max = _finite_float(
-            config.fd_realized_max, "fd_realized_max", exclusive_minimum=0.0
-        )
-    config.fd_mean_weight = _finite_float(config.fd_mean_weight, "fd_mean_weight", minimum=0.0)
-    config.fd_cov_weight = _finite_float(config.fd_cov_weight, "fd_cov_weight", minimum=0.0)
-    if config.fd_mean_weight == 0.0 and config.fd_cov_weight == 0.0:
-        raise ValueError("fd_mean_weight and fd_cov_weight must not both be zero")
-    if config.fd_cov_source not in FD_COV_SOURCES:
-        raise ValueError(f"fd_cov_source must be one of {FD_COV_SOURCES}, got {config.fd_cov_source!r}")
     config.fd_ema_beta = _finite_float(
         config.fd_ema_beta, "fd_ema_beta", exclusive_minimum=0.0, exclusive_maximum=1.0
     )
@@ -184,12 +151,11 @@ def apply_fd_config_defaults(config):
         raise ValueError("fd_encoder_cache_dir must be a non-empty path")
     if config.fd_reference_seed is not None:
         config.fd_reference_seed = _int_at_least(config.fd_reference_seed, "fd_reference_seed", 0)
-    config.fd_allow_small_reference = bool(config.fd_allow_small_reference)
 
     if fd_is_enabled(config):
-        if config.fd_cov_source == "residual" and config.num_samples_per_prompt < 2:
+        if config.num_samples_per_prompt < 2:
             raise ValueError(
-                "fd_cov_source: residual needs num_samples_per_prompt >= 2, got "
+                "Residual FD covariance needs num_samples_per_prompt >= 2, got "
                 f"{config.num_samples_per_prompt}"
             )
         reference_samples = (
@@ -198,20 +164,12 @@ def apply_fd_config_defaults(config):
         widest = max(fd_loaded_types(config), key=lambda name: resolve_fd_type(name).dim)
         dim = resolve_fd_type(widest).dim
         if reference_samples < 2 * dim:
-            if config.fd_allow_small_reference and not fd_reward_is_enabled(config):
-                pass
-            elif config.fd_allow_small_reference:
-                raise ValueError(
-                    "fd_allow_small_reference is only for measure-only smoke tests and is "
-                    "refused when fd_scale != 0"
-                )
-            else:
-                raise ValueError(
-                    "The FD reference pass needs at least 2 x d samples: fd_init_epochs x "
-                    "num_prompts_per_epoch x num_samples_per_prompt = "
-                    f"{reference_samples} < 2 x {dim} for {widest}. "
-                    "Raise fd_init_epochs."
-                )
+            raise ValueError(
+                "The FD reference pass needs at least 2 x d samples: fd_init_epochs x "
+                "num_prompts_per_epoch x num_samples_per_prompt = "
+                f"{reference_samples} < 2 x {dim} for {widest}. "
+                "Raise fd_init_epochs."
+            )
     return config
 
 
@@ -325,9 +283,9 @@ class BuresGradient:
 def bures_gradient(sigma_g_tilde, ref_tilde, ref_tilde_half, ref_raw, shrinkage, clamp):
     """Gradient matrix of the Bures term between shrunk covariances.
 
-    Implements Sections 3.2 and 3.3 of the plan: ``S = R^{1/2} Sigma_g R^{1/2}``,
+    Uses ``S = R^{1/2} Sigma_g R^{1/2}``,
     ``G_s = I - R^{1/2} S^{-1/2} R^{1/2}``, the exact-gradient shrinkage
-    correction ``G_eff = (1 - rho) G_s + (rho / d) tr(G_s) I`` (N.3), and the
+    correction ``G_eff = (1 - rho) G_s + (rho / d) tr(G_s) I``, and the
     lower clamp on the spectrum of ``G_eff``.  ``ref_raw`` is only used to
     report the reference variance along the most negative direction.
     """
@@ -505,8 +463,8 @@ class FdReference:
 @dataclass
 class FdRewardOutput:
     reward: torch.Tensor  # (n,) float64, before group centering
-    mean_term: torch.Tensor  # (n,) 2 (mu_g - mu_r)^T f_p, before weighting
-    cov_term: torch.Tensor  # (n,) quadratic form of the configured source, before weighting
+    mean_term: torch.Tensor  # (n,) 2 (mu_g - mu_r)^T f_p
+    cov_term: torch.Tensor  # (n,) residual covariance contribution, including the 1/N correction
     fd: float
     fd_mean: float
     fd_cov: float
@@ -517,9 +475,8 @@ class FdRewardOutput:
 def compute_fd_reward(features, group_size, moments, reference, config):
     """Per-sample FD reward and the epoch's FD values from the *previous* EMA state.
 
-    Implements Sections 3.2 to 3.5 of the plan.  ``features`` are the epoch's
-    gathered features ``(n, d)`` in contiguous prompt groups; the EMA update is
-    the caller's job and happens after this call.
+    ``features`` are the epoch's gathered features ``(n, d)`` in contiguous
+    prompt groups; the caller updates the EMA after this call.
     """
     if not moments.is_initialized():
         raise RuntimeError("FdMoments must be warm-started before computing rewards")
@@ -535,14 +492,8 @@ def compute_fd_reward(features, group_size, moments, reference, config):
     shrinkage = float(config.fd_shrinkage)
     eig_floor = float(config.fd_eig_floor)
     clamp = None if config.fd_clamp is None else float(config.fd_clamp)
-    w_mean = float(config.fd_mean_weight)
-    w_cov = float(config.fd_cov_weight)
-    source = config.fd_cov_source
-    if source not in FD_COV_SOURCES:
-        raise ValueError(f"fd_cov_source must be one of {FD_COV_SOURCES}, got {source!r}")
-
     mu_g = moments.mu
-    sigma_g_tilde, _, lam_g_raw, floor_frac_pooled = prepare_covariance(
+    sigma_g_tilde, _, _, _ = prepare_covariance(
         moments.covariance(), shrinkage, eig_floor
     )
     pooled = bures_gradient(
@@ -561,20 +512,14 @@ def compute_fd_reward(features, group_size, moments, reference, config):
     fd_mean = drift.dot(drift).item()
     mean_term = 2.0 * (f @ drift)
 
-    if source == "pooled":
-        centered = f - mu_g
-        cov_term = ((centered @ pooled.G) * centered).sum(dim=1)
-        active, active_features = pooled, centered
-        floor_frac, lam_raw = floor_frac_pooled, lam_g_raw
-    else:
-        # Section 3.6: the residual objective sees each sample through its
-        # group mean too, which adds (1/N) times the uncentered quadratic form.
-        resid_f = residual_features(f, group_size)
-        cov_term = ((resid_f @ resid.G) * resid_f).sum(dim=1) + ((f @ resid.G) * f).sum(dim=1) / group_size
-        active, active_features = resid, resid_f
-        floor_frac, lam_raw = floor_frac_resid, lam_gr_raw
+    # The residual objective also depends on each sample through its group
+    # mean, adding the uncentered quadratic form divided by the group size.
+    resid_f = residual_features(f, group_size)
+    cov_term = ((resid_f @ resid.G) * resid_f).sum(dim=1) + ((f @ resid.G) * f).sum(dim=1) / group_size
+    active, active_features = resid, resid_f
+    floor_frac, lam_raw = floor_frac_resid, lam_gr_raw
 
-    reward = -(w_mean * mean_term + w_cov * cov_term)
+    reward = -(mean_term + cov_term)
 
     # Fraction of the covariance term's energy carried by the top eigen-directions of G.
     energy = active.eigvals.abs() * ((active_features @ active.eigvecs) ** 2).sum(dim=0)
@@ -601,46 +546,6 @@ def compute_fd_reward(features, group_size, moments, reference, config):
         fd_resid=resid.fd_cov,
         diagnostics=diagnostics,
     )
-
-
-def clip_combined_reward(combined, group_size, clip):
-    """Clip the combined FD reward at ``clip`` standard deviations, then re-center.
-
-    ``clip`` is ``fd_sample_clip``.  The limit is ``clip * std(combined)`` with
-    the population std of the *pre-clip* vector; the clipped vector is centered
-    per prompt group again, because the clip is not group-symmetric and would
-    otherwise leave a group mean behind.  Bounds the per-sample outliers the
-    covariance term produces once its matrix turns indefinite.
-
-    Returns ``(clipped, clip_frac)``, the fraction being the share of samples
-    that hit the limit.  ``clip=None`` is a no-op returning the input object, so
-    a config without the key behaves exactly as before the key existed.
-    """
-    if clip is None:
-        return combined, 0.0
-    limit = float(clip) * combined.std(correction=0).item()
-    clip_frac = (combined.abs() > limit).double().mean().item()
-    return center_by_group(combined.clamp(min=-limit, max=limit), int(group_size)), clip_frac
-
-
-def capped_fd_scale(fd_scale, spread, realized_max):
-    """``fd_scale`` after the per-epoch cap on the realized strength.
-
-    ``spread`` is ``std(combined) / pre_fd_std``, so ``scale * spread`` is the
-    dose the FD term adds relative to the pre-FD advantage spread.
-    ``realized_max`` is ``fd_realized_max``: the scale is lowered to
-    ``realized_max / spread`` when the dose would exceed it, and never raised
-    (one-sided, so the near-zero signal of the EMA warm-in is not amplified).
-    At zero spread -- the warm-started EMA gives an exactly zero reward in the
-    first epochs -- the scale is zero rather than a division by zero; the delta
-    is zero either way.
-    """
-    scale = float(fd_scale)
-    if realized_max is None:
-        return scale
-    if spread > 0.0:
-        return min(scale, float(realized_max) / float(spread))
-    return 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -748,7 +653,7 @@ class FdTerm:
     Per loaded space, in a fixed order: the epoch's images are embedded and
     all-gathered so the moments and the reward use every sample, the reward is
     taken against the previous EMA state, centered per prompt group, and logged
-    under ``<key>/<space>``.  Trained spaces contribute ``weight / denominator``
+    under ``<key>/<space>``. Trained spaces contribute ``weight / null_fd``
     times their centered reward to the combined vector;
     the unsuffixed scalars describe that vector.  Every EMA is updated after
     all spaces have computed their reward.
@@ -757,18 +662,6 @@ class FdTerm:
     def __init__(self, spaces, config):
         self.spaces = spaces
         self.config = config
-
-    def denominator(self, space, fd_value):
-        """``D_i`` of the configured ``fd_normalize`` mode for a trained space."""
-        mode = self.config.fd_normalize
-        if mode == "none":
-            return 1.0
-        if mode == "null_ratio":
-            return float(space.null_fd)
-        if mode == "sg_ratio":
-            eps = self.config.fd_norm_eps
-            return float(fd_value) + (float(space.null_fd) if eps is None else float(eps))
-        raise ValueError(f"fd_normalize must be one of {FD_NORMALIZE_MODES}, got {mode!r}")
 
     def compute_epoch(self, images, group_size, advantages, accelerator, epoch):
         """Return an ``FdEpochResult``, or ``None`` when ``epoch`` is inactive.
@@ -818,7 +711,7 @@ class FdTerm:
             tensors[f"fd_mean_term_abs/{name}"] = out.mean_term[local].abs()
             tensors[f"fd_cov_term_abs/{name}"] = out.cov_term[local].abs()
             if space.trained:
-                denominator = self.denominator(space, out.fd)
+                denominator = float(space.null_fd)
                 scalars[f"fd_norm/{name}"] = denominator
                 contribution = (space.weight / denominator) * centered
                 combined = contribution if combined is None else combined + contribution
@@ -826,13 +719,6 @@ class FdTerm:
 
         scalars["fd_ema_age"] = float(self.spaces.age)
         scalars["fd_ratio_mean"] = sum(ratios) / len(ratios)
-        # The clip reshapes the vector everything downstream sees: the spread
-        # ratio, the cap, the delta and the returned combined reward.  The
-        # per-space ratios above are of the uncombined, unclipped rewards.
-        combined, clip_frac = clip_combined_reward(
-            combined, G, getattr(config, "fd_sample_clip", None)
-        )
-        scalars["fd_clip_frac"] = clip_frac
         spread = (combined.std(correction=0) / pre_fd_std).item()
         scalars["fd_reward_spread_ratio"] = spread
         # The eigensolves are float64 on identical inputs, so ranks should agree
@@ -840,7 +726,7 @@ class FdTerm:
         rank0_combined = broadcast(combined.clone(), from_process=0)
         scalars["fd_rank_max_diff"] = reduce_max(accelerator, (combined - rank0_combined).abs().max())
 
-        scale = capped_fd_scale(config.fd_scale, spread, getattr(config, "fd_realized_max", None))
+        scale = float(config.fd_scale)
         scalars["fd_scale_effective"] = scale
         # The dose actually applied to the advantage: the spread the FD term adds
         # relative to the pre-FD advantage spread.  Defined (as 0) at fd_scale 0.
@@ -858,9 +744,9 @@ class FdTerm:
 
 
 __all__ = [
-    "FD_COV_SOURCES", "FD_NORMALIZE_MODES", "FdEpochResult", "FdMoments", "FdReference", "FdRewardOutput",
-    "FdSpace", "FdSpaces", "FdTerm", "apply_fd_config_defaults", "bures_gradient", "capped_fd_scale",
-    "center_by_group", "clip_combined_reward", "compute_fd_reward", "fd_is_active_epoch",
+    "FdEpochResult", "FdMoments", "FdReference", "FdRewardOutput",
+    "FdSpace", "FdSpaces", "FdTerm", "apply_fd_config_defaults", "bures_gradient",
+    "center_by_group", "compute_fd_reward", "fd_is_active_epoch",
     "fd_is_enabled", "fd_loaded_types", "fd_logging_is_enabled", "fd_reward_is_enabled",
     "prepare_covariance", "residual_features",
 ]

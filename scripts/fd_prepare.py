@@ -38,7 +38,7 @@ import fd_encoders
 import fd_reference
 import fd_reward
 from batch_sampler import PromptSeedBatchSampler
-from config_loader import load_config
+from config_loader import load_config, validate_training_options
 from generation import generate_images
 from loss_utils import adapter_host
 
@@ -47,8 +47,8 @@ def resolve_config(config, num_processes):
     # Imported here: training_sd3 imports fd_reference at load time.
     import training_sd3
 
+    validate_training_options(config)
     config = training_sd3.apply_reproducibility_config_defaults(config)
-    config = training_sd3.apply_sft_config_defaults(config)
     config = fd_reward.apply_fd_config_defaults(config)
     training_sd3.derive_local_sizes(config, num_processes)
     return config

@@ -340,17 +340,17 @@ full derivation. The keys a user is most likely to change:
 | --- | --- |
 | `reverse_kl_weight` | β, the reverse-KL anchor of RAM |
 | `reward_multiplier`, `scale_rewards` | task-reward scaling and normalization (`group`, `epoch`, `none`) |
-| `dreamsim_scale`, `dreamsim_train_type` | DFR-DS weight and DreamSim variant (`dino_vitb16_patch`, `ensemble`, ..., or `latent`) |
-| `dreamsim_gate` | `none`, `solved` or `std`: switch the diversity term off for prompt groups whose task reward is constant |
+| `dreamsim_scale` | DFR-DS weight, using the DINO ViT-B/16 patch branch without gating |
 | `energy_scale`, `energy_lambda`, `energy_beta` | DFR-MMD weight, interaction coefficient λ and distance exponent b ∈ (0, 2] |
-| `energy_feature_extractor` | `latent`, `dreamsim:<variant>` or `fd:<encoder>` |
 | `energy_reference_samples_per_prompt` | M, fresh base-model samples per prompt and epoch |
 | `fd_scale`, `fd_train_types`, `fd_train_weights` | DFR-FD weight, feature spaces and per-space weights |
-| `fd_normalize` | per-space normalization: `null_ratio` (default; divide by the base model's null-FD), `sg_ratio` or `none` |
 | `fd_log_types`, `dreamsim_log_types` | spaces and variants that are only logged, never optimized |
 
 All three regularizers are added to the advantage after the task-reward
-normalization and are centered within each prompt group. FD encoders:
+normalization and are centered within each prompt group. DFR-MMD uses
+unit-normalized terminal latents. DFR-FD combines the mean and residual
+covariance terms, normalizing each space by the base model's null-FD.
+FD encoders:
 `dinov2_vitl14`, `inception_v3`, `convnextv2_base`, `mae_vitl16`,
 `siglip2_so400m`, `clip_vitl14`. When `inception_v3` is loaded, the Inception
 Vendi Score is logged as well.
