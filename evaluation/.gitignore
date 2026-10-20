@@ -22,11 +22,9 @@ __pycache__/
 
 # Generated evaluation artifacts
 /images/
-/images_smoke/
 /metrics/
 /checkpoint_cache/
 /manifests/
-/manifests_smoke/images/
 
 # Downloaded/vendor model artifacts
 /models/

@@ -33,7 +33,6 @@ configs/
   defaults/{geneval,ocr}_sd3.yaml   complete task defaults (RAM, beta = 1)
   geneval/{ram,dfr_ds,dfr_mmd,dfr_fd}.yaml
   ocr/{ram,dfr_ds,dfr_mmd,dfr_fd}.yaml
-  smoke.yaml                        tiny end-to-end check
 prompts/                            training and validation prompts (GenEval, OCR)
 reward_models/                      GenEval, OCR, ImageReward, Aesthetic, CLIP, PickScore
 scripts/
@@ -233,17 +232,6 @@ root; arguments after the config pass through to training:
 sbatch scripts/slurm/train.sbatch geneval/dfr_fd --seed 1
 ```
 
-### Smoke test
-
-`configs/smoke.yaml` runs one tiny epoch, a validation pass and a checkpoint on
-one GPU in about ten minutes. It needs the model weights but no FD reference.
-
-```bash
-source scripts/cuda126_env.sh
-uv run --no-sync -- accelerate launch --num_processes 1 \
-    scripts/training_sd3.py smoke --stop_after_epoch 1
-```
-
 ## Evaluation
 
 `evaluation/` generates images from SD3.5 checkpoints and scores them offline
@@ -390,7 +378,7 @@ Vendi Score is logged as well.
 ```bibtex
 @misc{passaro2026dfr,
   title  = {Distribution-based regularization for reward fine-tuning diffusion and flow models},
-  author = {Passaro, Romeo and Lee, Jeongjae and Ye, Jong Chul and Tong, Alexander and Rehman, Danyal},
+  author = {Passaro, Romeo and Lee, Jeongjae and Ye, Jong Chul and Bronstein, Michael M. and Bengio, Yoshua and Tong, Alexander and Rehman, Danyal},
   year   = {2026}
 }
 ```
