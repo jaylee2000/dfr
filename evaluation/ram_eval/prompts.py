@@ -8,18 +8,15 @@ from typing import Sequence
 
 from .config import (
     DATASETS,
-    DEFAULT_COCO_CAPTIONS_JSON,
-    DEFAULT_COCO_IMAGE_ROOT,
     DEFAULT_MANIFEST_DIR,
     DEFAULT_PROMPT_SOURCES,
 )
-from .io_utils import prompt_manifest_path, read_json, seeds_path, write_json, write_jsonl
+from .io_utils import prompt_manifest_path, seeds_path, write_json, write_jsonl
 
 DATASET_SEED_OFFSETS = {
     "geneval": 101,
     "drawbench": 202,
-    "pickscore": 303,
-    "mscoco": 404,
+    "ocr": 505,
 }
 
 
@@ -58,33 +55,9 @@ def _read_text_prompts(path: Path, dataset: str) -> list[dict]:
     return records
 
 
-def _read_mscoco(captions_json: Path, image_root: Path) -> list[dict]:
-    data = read_json(captions_json)
-    images = {int(item["id"]): item for item in data.get("images", [])}
-    first_caption_by_image: dict[int, str] = {}
-    for ann in data.get("annotations", []):
-        image_id = int(ann["image_id"])
-        if image_id not in first_caption_by_image:
-            first_caption_by_image[image_id] = ann["caption"].strip()
-
-    records = []
-    for source_index, image_id in enumerate(sorted(first_caption_by_image)):
-        image_info = images.get(image_id, {})
-        file_name = image_info.get("file_name") or f"COCO_val2014_{image_id:012d}.jpg"
-        real_image_path = image_root / file_name
-        records.append(
-            {
-                "dataset": "mscoco",
-                "source_index": source_index,
-                "prompt": first_caption_by_image[image_id],
-                "metadata": {"image_id": image_id, "file_name": file_name},
-                "real_image_path": str(real_image_path),
-            }
-        )
-    return records
-
-
 def _sample(records: Sequence[dict], count: int, seed: int, dataset: str) -> list[dict]:
+    if count < 1:
+        raise ValueError(f"Requested {count} {dataset} prompts; count must be positive.")
     if count > len(records):
         raise ValueError(f"Requested {count} {dataset} prompts, but only found {len(records)}.")
     rng = random.Random(seed)
@@ -99,18 +72,20 @@ def _sample(records: Sequence[dict], count: int, seed: int, dataset: str) -> lis
 
 
 def prepare_manifests(args: argparse.Namespace) -> None:
+    if args.images_per_prompt < 2:
+        raise ValueError("images_per_prompt must be at least 2 for FD and diversity.")
     manifest_dir = Path(args.manifest_dir)
     manifest_dir.mkdir(parents=True, exist_ok=True)
 
     counts = {
         "geneval": args.geneval_count,
         "drawbench": args.drawbench_count,
-        "pickscore": args.pickscore_count,
+        "ocr": args.ocr_count,
     }
     readers = {
         "geneval": lambda: _read_geneval(DEFAULT_PROMPT_SOURCES["geneval"]),
         "drawbench": lambda: _read_text_prompts(DEFAULT_PROMPT_SOURCES["drawbench"], "drawbench"),
-        "pickscore": lambda: _read_text_prompts(DEFAULT_PROMPT_SOURCES["pickscore"], "pickscore"),
+        "ocr": lambda: _read_text_prompts(DEFAULT_PROMPT_SOURCES["ocr"], "ocr"),
     }
     summary = {
         "seed": args.prompt_seed,
@@ -118,7 +93,7 @@ def prepare_manifests(args: argparse.Namespace) -> None:
         "datasets": {},
     }
 
-    for dataset in (name for name in args.prompts if name != "mscoco"):
+    for dataset in args.prompts:
         reader = readers[dataset]
         records = reader()
         selected = _sample(records, counts[dataset], args.prompt_seed + DATASET_SEED_OFFSETS[dataset], dataset)
@@ -126,17 +101,6 @@ def prepare_manifests(args: argparse.Namespace) -> None:
         summary["datasets"][dataset] = {
             "source": str(DEFAULT_PROMPT_SOURCES[dataset]),
             "source_count": len(records),
-            "selected_count": len(selected),
-        }
-
-    if "mscoco" in args.prompts:
-        coco_records = _read_mscoco(DEFAULT_COCO_CAPTIONS_JSON, DEFAULT_COCO_IMAGE_ROOT)
-        selected = _sample(coco_records, args.coco_count, args.prompt_seed + DATASET_SEED_OFFSETS["mscoco"], "mscoco")
-        write_jsonl(prompt_manifest_path(manifest_dir, "mscoco"), selected)
-        summary["datasets"]["mscoco"] = {
-            "source": str(DEFAULT_COCO_CAPTIONS_JSON),
-            "image_root": str(DEFAULT_COCO_IMAGE_ROOT),
-            "source_count": len(coco_records),
             "selected_count": len(selected),
         }
 
@@ -151,13 +115,12 @@ def prepare_manifests(args: argparse.Namespace) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Create prompt and seed manifests for the RAM evaluation.")
+    parser = argparse.ArgumentParser(description="Create prompt and seed manifests for the DFR evaluation.")
     parser.set_defaults(manifest_dir=str(DEFAULT_MANIFEST_DIR))
     parser.add_argument("--prompts", nargs="+", choices=DATASETS, required=True)
     parser.add_argument("--geneval-count", type=int, default=256)
     parser.add_argument("--drawbench-count", type=int, default=256)
-    parser.add_argument("--pickscore-count", type=int, default=256)
-    parser.add_argument("--coco-count", type=int, default=30000)
+    parser.add_argument("--ocr-count", type=int, default=256)
     parser.add_argument("--prompt-seed", type=int, default=20260529)
     parser.add_argument("--seed-base", type=int, default=0)
     parser.add_argument("--images-per-prompt", type=int, default=64)

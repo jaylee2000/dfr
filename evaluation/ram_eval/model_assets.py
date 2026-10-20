@@ -85,8 +85,13 @@ class ModelLock:
     def checkpoint_path(self, key: str) -> Path:
         return self.path_for("checkpoints", key)
 
-    def metric_path(self, key: str) -> Path:
-        return self.path_for("metrics", key)
+    def metric_path(self, key: str, *, required: tuple[str, ...] = ()) -> Path:
+        path = self.path_for("metrics", key)
+        for name in required:
+            if not (path / name).is_file():
+                raise ModelAssetError(f"Missing {key} asset: {path / name}. Re-run model preparation.")
+        return path
+
 
 def required_files(payload: Mapping[str, Any]) -> list[tuple[str, Path, tuple[str, ...]]]:
     requirements: list[tuple[str, Path, tuple[str, ...]]] = []

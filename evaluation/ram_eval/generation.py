@@ -136,7 +136,10 @@ def _load_ram_transformer(pipe, checkpoint_path: Path, device, dtype):
     state = _normalize_state_keys(state)
     missing, unexpected = pipe.transformer.load_state_dict(state, strict=False)
     pipe.transformer.set_adapter("evaluation")
-    pipe.transformer.to(device=device, dtype=dtype)
+    pipe.transformer.to(device=device)
+    # Keep adapter master weights in FP32; sampling executes them under autocast.
+    for name, parameter in pipe.transformer.named_parameters():
+        parameter.data = parameter.data.to(torch.float32 if "lora_" in name else dtype)
     pipe.transformer.eval()
     del state
     if device.type == "cuda":
@@ -161,6 +164,7 @@ def load_pipeline(
     attention_slicing: bool,
     cpu_offload: bool,
     merge_lora: bool,
+    vae_dtype_name: str = "fp32",
 ):
     from diffusers import StableDiffusion3Pipeline
     from peft import PeftModel
@@ -183,6 +187,11 @@ def load_pipeline(
     )
     pipe.safety_checker = None
     pipe.set_progress_bar_config(disable=True)
+    # Explicitly cast all three encoders, including T5 normalization parameters.
+    for name in ("text_encoder", "text_encoder_2", "text_encoder_3"):
+        encoder = getattr(pipe, name, None)
+        if encoder is not None:
+            encoder.to(dtype=dtype)
 
     if spec.loader == "peft_lora":
         temporary_checkpoint = None
@@ -216,6 +225,7 @@ def load_pipeline(
     elif spec.loader != "base":
         raise ValueError(f"Unsupported loader type for {spec.key}: {spec.loader}")
 
+    pipe.vae.to(dtype=_torch_dtype(vae_dtype_name))
     if attention_slicing:
         pipe.enable_attention_slicing("auto")
     if cpu_offload:
@@ -238,7 +248,10 @@ def _load_seeds(manifest_dir: Path) -> list[int]:
     path = seeds_path(manifest_dir)
     if not path.exists():
         raise FileNotFoundError(f"Missing seed manifest: {path}. Run python -m ram_eval.prompts first.")
-    return [int(seed) for seed in read_json(path)["seeds"]]
+    seeds = [int(seed) for seed in read_json(path)["seeds"]]
+    if len(seeds) < 2 or len(set(seeds)) != len(seeds):
+        raise ValueError("Seed manifest must contain at least two distinct image seeds")
+    return seeds
 
 
 def _build_latents(pipe, seeds: Iterable[int], height: int, width: int):
@@ -282,7 +295,6 @@ def expected_image_records(
                     "image_path": str(path),
                     "exists": path.exists(),
                     "metadata": prompt.get("metadata", {}),
-                    "real_image_path": prompt.get("real_image_path"),
                 }
             )
     return rows
@@ -329,19 +341,32 @@ def _generate_dataset(pipe, spec: CheckpointSpec, dataset: str, prompts: list[di
             batch_latents = torch.cat([latents_by_seed[seed].clone() for seed in batch_seeds], dim=0)
             batch_latents = batch_latents.to(device=device, dtype=dtype)
             with torch.inference_mode():
-                outputs = pipe(
-                    [prompt] * len(batch),
-                    height=args.height,
-                    width=args.width,
-                    num_inference_steps=args.num_inference_steps,
-                    guidance_scale=args.guidance_scale,
-                    latents=batch_latents,
-                )
-            for image, (_, out_path) in zip(outputs.images, batch):
+                with torch.autocast(
+                    device_type=device.type,
+                    dtype=dtype,
+                    enabled=device.type == "cuda" and dtype in (torch.float16, torch.bfloat16),
+                ):
+                    outputs = pipe(
+                        [prompt] * len(batch),
+                        height=args.height,
+                        width=args.width,
+                        num_inference_steps=args.num_inference_steps,
+                        guidance_scale=args.guidance_scale,
+                        latents=batch_latents,
+                        output_type="latent",
+                    )
+                # Preserve SD3's latent scaling before the separate FP32 decode.
+                denoised = outputs.images
+                vae_latents = denoised / pipe.vae.config.scaling_factor + pipe.vae.config.shift_factor
+                decoded = pipe.vae.decode(vae_latents.to(dtype=pipe.vae.dtype), return_dict=False)[0]
+                images = pipe.image_processor.postprocess(decoded, output_type="pil")
+            for image, (_, out_path) in zip(images, batch):
                 ensure_dir(out_path.parent)
-                image.save(out_path)
+                temporary = out_path.with_suffix(".tmp")
+                image.save(temporary, format="PNG")
+                temporary.replace(out_path)
                 generated += 1
-            del outputs, batch_latents
+            del outputs, denoised, vae_latents, decoded, images, batch_latents
             if device.type == "cuda":
                 torch.cuda.empty_cache()
 
@@ -358,20 +383,33 @@ def _run_checkpoint(spec: CheckpointSpec, args: argparse.Namespace, model_lock: 
     manifest_dir = Path(args.manifest_dir)
     image_root = Path(args.image_root)
     all_seeds = _load_seeds(manifest_dir)
+    if args.images_per_prompt != len(all_seeds):
+        raise ValueError(
+            f"images_per_prompt must match the seed manifest ({len(all_seeds)}); recreate manifests for a smaller run"
+        )
     datasets = args.prompts
 
     dataset_payloads = []
+    all_prompts_by_dataset = {}
     for dataset in datasets:
         prompts = _load_prompt_manifest(manifest_dir, dataset)
+        all_prompts_by_dataset[dataset] = prompts
         if args.start_index:
             prompts = prompts[args.start_index :]
         if args.limit_prompts is not None:
             prompts = prompts[: args.limit_prompts]
         seeds = all_seeds[: args.images_per_prompt]
-        if dataset == "mscoco":
-            seeds = seeds[: args.mscoco_images_per_prompt]
+        if not prompts:
+            raise ValueError(f"No {dataset} prompts selected")
+        previous_manifest = image_manifest_path(manifest_dir, spec.key, dataset)
+        if previous_manifest.is_file() and not args.overwrite and not args.dry_run:
+            selected_prompts = {row["prompt_id"]: row["prompt"] for row in all_prompts_by_dataset[dataset]}
+            for row in read_jsonl(previous_manifest):
+                if row["prompt_id"] in selected_prompts and row["prompt"] != selected_prompts[row["prompt_id"]]:
+                    raise ValueError(
+                        f"Prompt text changed for {dataset}/{row['prompt_id']}; use a new image root or --overwrite"
+                    )
         dataset_payloads.append((dataset, prompts, seeds))
-        _save_image_manifest(manifest_dir, spec.key, dataset, prompts, seeds, image_root)
 
     run_config = {
         "checkpoint": _checkpoint_payload(spec),
@@ -381,16 +419,32 @@ def _run_checkpoint(spec: CheckpointSpec, args: argparse.Namespace, model_lock: 
         "height": args.height,
         "width": args.width,
         "dtype": checkpoint_args.dtype,
+        "vae_dtype": args.vae_dtype,
+        "images_per_prompt": args.images_per_prompt,
+        "seeds": all_seeds[: args.images_per_prompt],
+        "prompt_counts": {dataset: len(prompts) for dataset, prompts, _ in dataset_payloads},
         "batch_size": args.batch_size,
         "dry_run": args.dry_run,
     }
-    write_json(Path(args.image_root) / spec.key / "generation_config.json", run_config)
-
+    config_path = image_root / spec.key / "generation_config.json"
+    if config_path.is_file() and not args.overwrite and not args.dry_run:
+        previous = read_json(config_path)
+        for key in (
+            "checkpoint", "guidance_scale", "num_inference_steps", "height", "width", "dtype", "vae_dtype", "seeds"
+        ):
+            if previous.get(key) != run_config[key]:
+                raise ValueError(
+                    f"Generation setting {key} changed for {spec.key}; use a new image root or --overwrite"
+                )
     if args.dry_run:
         print(f"[dry-run] {spec.key}: loader={spec.loader}, dtype={checkpoint_args.dtype}")
         for dataset, prompts, seeds in dataset_payloads:
             print(f"[dry-run] {dataset}: {len(prompts)} prompts x {len(seeds)} seeds")
         return
+
+    write_json(config_path, run_config)
+    for dataset, prompts, seeds in dataset_payloads:
+        _save_image_manifest(manifest_dir, spec.key, dataset, all_prompts_by_dataset[dataset], seeds, image_root)
 
     pipe = load_pipeline(
         spec,
@@ -400,10 +454,11 @@ def _run_checkpoint(spec: CheckpointSpec, args: argparse.Namespace, model_lock: 
         attention_slicing=args.attention_slicing,
         cpu_offload=args.cpu_offload,
         merge_lora=args.merge_lora,
+        vae_dtype_name=args.vae_dtype,
     )
     for dataset, prompts, seeds in dataset_payloads:
         _generate_dataset(pipe, spec, dataset, prompts, seeds, checkpoint_args)
-        _save_image_manifest(manifest_dir, spec.key, dataset, prompts, seeds, image_root)
+        _save_image_manifest(manifest_dir, spec.key, dataset, all_prompts_by_dataset[dataset], seeds, image_root)
     del pipe
     gc.collect()
 
@@ -414,6 +469,10 @@ def _run_checkpoint(spec: CheckpointSpec, args: argparse.Namespace, model_lock: 
 
 
 def run_generation(args: argparse.Namespace) -> None:
+    if args.batch_size < 1 or args.num_inference_steps < 1:
+        raise ValueError("batch-size and num-inference-steps must be positive")
+    if args.start_index < 0 or (args.limit_prompts is not None and args.limit_prompts < 1):
+        raise ValueError("start-index must be nonnegative and limit-prompts must be positive")
     model_lock = ModelLock.load(args.model_lock)
     specs = resolve_checkpoint_specs(args.checkpoints, model_lock, args.checkpoint_config)
     if not args.dry_run:
@@ -435,7 +494,6 @@ def build_generation_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit-prompts", type=int)
     parser.add_argument("--start-index", type=int, default=0)
     parser.add_argument("--images-per-prompt", type=int, default=64)
-    parser.add_argument("--mscoco-images-per-prompt", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--num-inference-steps", type=int, default=20)
     parser.add_argument("--height", type=int, default=512)
@@ -449,6 +507,7 @@ def build_generation_parser() -> argparse.ArgumentParser:
         help="Override the inferred checkpoint dtype.",
     )
     parser.add_argument("--attention-slicing", action="store_true")
+    parser.add_argument("--vae-dtype", choices=["fp16", "bf16", "fp32"], default="fp32")
     parser.add_argument("--cpu-offload", action="store_true")
     parser.add_argument("--merge-lora", action="store_true")
     parser.add_argument("--overwrite", action="store_true")

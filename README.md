@@ -247,26 +247,26 @@ uv run --no-sync -- accelerate launch --num_processes 1 \
 ## Evaluation
 
 `evaluation/` generates images from SD3.5 checkpoints and scores them offline
-with PickScore, ImageReward, FD to the base model (and FID against MS-COCO) and
-DreamSim diversity. It has its own uv environment and needs neither the CUDA
-toolchain nor MMCV. The task scores (GenEval, OCR) are measured during
+with ImageReward, PickScore, per-prompt FD to the base model in Inception-v3
+and DINOv2 ViT-L/14 features, and DreamSim diversity with DINO ViT-B/16 (patch)
+and OpenCLIP ViT-B/32. It has its own uv environment and needs neither the
+CUDA toolchain nor MMCV. Task scores (GenEval, OCR) are measured during
 training validation.
 
 ### Setup
 
 ```bash
 cd evaluation
-cp local.env.example local.env   # set RAM_ROOT, EVAL_ROOT, OUTPUTS_ROOT, MSCOCO_ROOT
+cp local.env.example local.env   # set RAM_ROOT, EVAL_ROOT, OUTPUTS_ROOT
 source scripts/eval_env.sh       # loads local.env; selects evaluation/.venv
 uv sync --project "${EVAL_ROOT}" --locked --python 3.10.16
 ```
 
-`OUTPUTS_ROOT` receives `manifests/`, `images/` and `metrics/`. `MSCOCO_ROOT`
-must contain `annotations/captions_val2014.json` and `val2014/` when the
-`mscoco` prompt set is used; otherwise set it to any absolute path. In later
-shells, `source scripts/eval_env.sh` selects the environment again.
+`RAM_ROOT` points to this repository and `EVAL_ROOT` to its `evaluation/`
+directory. `OUTPUTS_ROOT` receives `manifests/`, `images/` and `metrics/`.
+In later shells, `source scripts/eval_env.sh` selects the environment again.
 
-Download the models once, on a node with internet access (about 75 GB):
+Download the models once, on a node with internet access:
 
 ```bash
 scripts/prepare_models.sh prepare
@@ -274,7 +274,8 @@ scripts/prepare_models.sh verify
 ```
 
 Generation and metrics then run fully offline from the resulting lock file
-(`evaluation/models/models.lock.json`).
+(`evaluation/models/models.lock.json`). If you prepared assets with an older
+version, run preparation again to add DINOv2 and OpenCLIP before verification.
 
 ### Your checkpoints
 
@@ -298,25 +299,49 @@ checkpoints:
 ### Generate and score
 
 ```bash
-bash scripts/create_manifests.sh --prompts geneval drawbench pickscore
-bash scripts/run_generation.sh --checkpoints base_sd35 ocr_dfr_ds \
-    --prompts geneval drawbench pickscore
+bash scripts/create_manifests.sh --prompts geneval drawbench ocr
+bash scripts/run_generation.sh --checkpoints base_sd35 \
+    --prompts geneval drawbench ocr
+bash scripts/run_generation.sh --checkpoints ocr_dfr_ds --prompts ocr drawbench
 bash scripts/run_metric.sh --image-path-root "${OUTPUTS_ROOT}/images" \
+    --checkpoints ocr_dfr_ds --prompts ocr drawbench --base-checkpoint base_sd35 \
     --metrics pickscore imagereward fid dreamsim
 ```
 
-Manifests fix the prompt subset (256 per dataset by default) and the seeds
-(64 images per prompt by default), so every checkpoint is scored on identical
-inputs. Generation is resumable. Each metric writes `per_image.jsonl`,
-`per_prompt.jsonl` and `summary.json` under
-`OUTPUTS_ROOT/metrics/<metric>/<checkpoint>/<dataset>/`. The metric wrapper
-infers the prompt sets from the generation metadata when `--prompts` is
-omitted. For a quick plumbing check, copy `manifests_smoke/` to
-`OUTPUTS_ROOT/manifests` (two prompts per dataset, two images each) and pass
-`--images-per-prompt 2` to generation.
+Evaluate GenEval checkpoints on `geneval drawbench` and OCR checkpoints on
+`ocr drawbench`. The base checkpoint needs images for every evaluated set.
+PickScore remains a metric; it is not a prompt set.
 
-The DreamSim metric reports the unnormalized cosine distance; divide it by two
-to compare with the training-time `dreamsim_diversity` logs.
+Manifests fix 256 source entries per dataset using prompt seed `20260529`
+and 64 image seeds (`0` through `63`) shared by every prompt and checkpoint.
+The source files contain 2,212 GenEval entries, 1,000 DrawBench entries, and
+1,018 OCR entries. Repeated source entries are preserved when sampling.
+Generation defaults to 512×512, 20 steps, FP16 transformer/text-encoder
+execution, and FP32 VAE decoding. Checkpoint catalogs specify guidance
+(4.5 normally; use 1.0 for multi-reward DiffusionNFT). `--dtype` and
+`--vae-dtype` explicitly override precision.
+
+Generation is resumable with unchanged settings. Use a fresh output directory
+when switching from older generation settings, or regenerate with
+`--overwrite`. Metrics reject missing images and mismatched prompt/seed
+groups. For development, reduce manifest counts with `--geneval-count`,
+`--drawbench-count`, `--ocr-count`, and `--images-per-prompt`; pass the same
+image count to generation. `--limit-prompts` selects complete prompt groups;
+`--limit-images` must end at a complete group. Small development runs do not
+implement the full paper protocol.
+
+Outputs live under `OUTPUTS_ROOT/metrics/<metric>/<checkpoint>/<dataset>/`.
+ImageReward and PickScore write per-image and per-prompt scores. The historical
+`fid` command writes per-prompt FD and summaries in `inception_v3/` and
+`dinov2_vitl14/`, plus a combined encoder summary. FD uses the empirical
+covariance with denominator N−1, compares each prompt's 64 images against
+that prompt's base images, and averages the prompt distances.
+
+DreamSim writes the `dino_vitb16_patch` and `open_clip_vitb32` variants in
+per-prompt records and summaries. Each reports mean pairwise `1 − cosine`
+distance over distinct images. The DINO patch branch concatenates the CLS
+embedding with the spatially averaged patch embeddings. Divide these scores
+by two to compare with training-time `dreamsim_diversity` logs.
 
 ## Configuration reference
 

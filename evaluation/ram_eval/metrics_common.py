@@ -6,7 +6,16 @@ from pathlib import Path
 from typing import Iterator
 
 from .generation import expected_image_records
-from .io_utils import ensure_dir, prompt_manifest_path, read_json, read_jsonl, seeds_path, write_json, write_jsonl
+from .io_utils import (
+    ensure_dir,
+    image_manifest_path,
+    prompt_manifest_path,
+    read_json,
+    read_jsonl,
+    seeds_path,
+    write_json,
+    write_jsonl,
+)
 
 
 def torch_dtype(dtype_name: str):
@@ -26,12 +35,18 @@ def load_prompt_records(manifest_dir: Path, dataset: str, limit_prompts: int | N
     if not path.exists():
         raise FileNotFoundError(f"Missing prompt manifest for {dataset}: {path}")
     rows = list(read_jsonl(path))
+    if limit_prompts is not None and limit_prompts < 1:
+        raise ValueError("limit_prompts must be positive")
+    if not rows or len({row["prompt_id"] for row in rows}) != len(rows):
+        raise ValueError(f"Prompt manifest must contain distinct prompt IDs: {path}")
     return rows[:limit_prompts] if limit_prompts is not None else rows
 
 
 def load_seeds(manifest_dir: Path, dataset: str) -> list[int]:
     seeds = [int(seed) for seed in read_json(seeds_path(manifest_dir))["seeds"]]
-    return seeds[:1] if dataset == "mscoco" else seeds
+    if len(seeds) < 2 or len(set(seeds)) != len(seeds):
+        raise ValueError("Seed manifest must contain at least two distinct image seeds")
+    return seeds
 
 
 def expected_records_for(
@@ -43,12 +58,45 @@ def expected_records_for(
 ) -> list[dict]:
     prompts = load_prompt_records(manifest_dir, dataset, limit_prompts)
     seeds = load_seeds(manifest_dir, dataset)
-    return expected_image_records(checkpoint, dataset, prompts, seeds, image_root)
+    records = expected_image_records(checkpoint, dataset, prompts, seeds, image_root)
+    config_path = image_root / checkpoint / "generation_config.json"
+    if config_path.is_file():
+        config = read_json(config_path)
+        if "seeds" in config and config["seeds"] != seeds:
+            raise ValueError(f"Generation seeds do not match the seed manifest: {config_path}")
+    generated_path = image_manifest_path(manifest_dir, checkpoint, dataset)
+    if generated_path.is_file():
+        prompt_ids = {row["prompt_id"] for row in prompts}
+        generated = [row for row in read_jsonl(generated_path) if row["prompt_id"] in prompt_ids]
+
+        def identity(row):
+            return row["prompt_id"], row["prompt"], row["seed"]
+
+        if sorted(map(identity, generated)) != sorted(map(identity, records)):
+            raise ValueError(f"Generated prompt/seed groups do not match the manifests: {generated_path}")
+    return records
 
 
-def existing_records(records: list[dict], limit_images: int | None = None) -> list[dict]:
-    rows = [row for row in records if Path(row["image_path"]).exists()]
-    return rows[:limit_images] if limit_images is not None else rows
+def existing_records(
+    records: list[dict], limit_images: int | None = None, *, allow_missing: bool = False
+) -> list[dict]:
+    if limit_images is not None:
+        if limit_images < 1:
+            raise ValueError("limit_images must be positive")
+        selected = records[:limit_images]
+        complete = group_by_prompt(records)
+        for prompt_id, rows in group_by_prompt(selected).items():
+            if len(rows) != len(complete[prompt_id]):
+                raise ValueError("limit_images must select complete prompt groups; use --limit-prompts instead")
+        records = selected
+    if not records:
+        raise ValueError("No images selected for evaluation")
+    missing = [row for row in records if not Path(row["image_path"]).is_file()]
+    if missing and not allow_missing:
+        raise FileNotFoundError(
+            f"Incomplete evaluation: {len(missing)} of {len(records)} images missing; first: {missing[0]['image_path']}"
+        )
+    return [row for row in records if Path(row["image_path"]).is_file()]
 
 
 def group_by_prompt(records: list[dict]) -> dict[str, list[dict]]:

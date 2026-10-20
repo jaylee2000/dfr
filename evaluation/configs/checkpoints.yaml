@@ -13,6 +13,6 @@ checkpoints:
     base_model: sd35_medium
     loader: base
     guidance_scale: 4.5
-    default_dtype: bf16
+    default_dtype: fp16
 
 # Add your own checkpoints in configs/checkpoints.local.yaml (same schema).

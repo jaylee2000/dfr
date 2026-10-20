@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .config import PER_PROMPT_DATASETS
 from .model_assets import ModelLock, enforce_offline_mode
 from .metrics_common import (
     existing_records,
@@ -14,6 +13,21 @@ from .metrics_common import (
     summarize_scores,
     write_json,
     write_jsonl,
+)
+
+
+DREAMSIM_VARIANTS = {
+    "dino_vitb16_patch": ("dino_vitb16", True),
+    "open_clip_vitb32": ("open_clip_vitb32", False),
+}
+DREAMSIM_REQUIRED_FILES = (
+    "dino_vitb16_pretrain.pth",
+    "dino_vitb16_patch_lora/adapter_config.json",
+    "dino_vitb16_patch_lora/adapter_model.safetensors",
+    "facebookresearch_dino_main/hubconf.py",
+    "open_clip_vitb32_pretrain.pth.tar",
+    "open_clip_vitb32_single_lora/adapter_config.json",
+    "open_clip_vitb32_single_lora/adapter_model.safetensors",
 )
 
 
@@ -67,7 +81,7 @@ def _mean_pairwise_cosine_distance(embeddings) -> float | None:
     emb = embeddings / embeddings.norm(p=2, dim=-1, keepdim=True).clamp_min(1e-12)
     sim = emb @ emb.T
     n = sim.shape[0]
-    upper = sim[torch.triu_indices(n, n, offset=1).unbind()]
+    upper = sim[torch.triu_indices(n, n, offset=1, device=sim.device).unbind()]
     return float((1.0 - upper).mean().item())
 
 
@@ -75,59 +89,69 @@ def run(args) -> None:
     metric_root = Path(args.metric_root)
     manifest_dir = Path(args.manifest_dir)
     image_root = Path(args.image_root)
-    if args.dry_run:
-        for checkpoint in args.checkpoints:
-            for dataset in args.datasets:
-                if dataset not in PER_PROMPT_DATASETS:
-                    print(f"Skipping DreamSim diversity for {dataset}; it is defined for 64-image prompt groups.")
-                    continue
-                records = existing_records(
-                    expected_records_for(checkpoint, dataset, manifest_dir, image_root, args.limit_prompts),
-                    args.limit_images,
-                )
+    workloads = {}
+    outputs = {}
+    for checkpoint in args.checkpoints:
+        for dataset in args.datasets:
+            records = existing_records(
+                expected_records_for(checkpoint, dataset, manifest_dir, image_root, args.limit_prompts),
+                args.limit_images,
+                allow_missing=args.dry_run,
+            )
+            if args.dry_run:
                 print(f"[dry-run] DreamSim {checkpoint}/{dataset}: {len(records)} existing images")
+                continue
+            key = (checkpoint, dataset)
+            workloads[key] = group_by_prompt(records)
+            outputs[key] = {
+                prompt_id: {
+                    "checkpoint": checkpoint,
+                    "dataset": dataset,
+                    "prompt_id": prompt_id,
+                    "prompt_index": rows[0]["prompt_index"],
+                    "prompt": rows[0]["prompt"],
+                    "count": len(rows),
+                }
+                for prompt_id, rows in workloads[key].items()
+            }
+    if args.dry_run:
         return
 
     enforce_offline_mode()
     model_lock = ModelLock.load(args.model_lock)
+    cache_dir = model_lock.metric_path("dreamsim", required=DREAMSIM_REQUIRED_FILES)
 
     from dreamsim import dreamsim
 
-    model, preprocess = dreamsim(
-        dreamsim_type="dino_vitb16",
-        use_patch_model=True,
-        device=args.device,
-        cache_dir=str(model_lock.metric_path("dreamsim")),
-    )
-    model.eval()
-
-    for checkpoint in args.checkpoints:
-        for dataset in args.datasets:
-            if dataset not in PER_PROMPT_DATASETS:
-                print(f"Skipping DreamSim diversity for {dataset}; it is defined for 64-image prompt groups.")
-                continue
-            records = existing_records(
-                expected_records_for(checkpoint, dataset, manifest_dir, image_root, args.limit_prompts),
-                args.limit_images,
-            )
-            out_dir = metric_output_dir(metric_root, "dreamsim", checkpoint, dataset)
-
-            per_prompt = []
-            for prompt_id, rows in group_by_prompt(records).items():
+    for variant, (dreamsim_type, use_patch_model) in DREAMSIM_VARIANTS.items():
+        model, preprocess = dreamsim(
+            dreamsim_type=dreamsim_type,
+            use_patch_model=use_patch_model,
+            device=args.device,
+            cache_dir=str(cache_dir),
+        )
+        model.eval()
+        for key, groups in workloads.items():
+            for prompt_id, rows in groups.items():
                 embeddings = _embed_rows(model, preprocess, rows, args.batch_size, args.device)
-                score = _mean_pairwise_cosine_distance(embeddings)
-                per_prompt.append(
-                    {
-                        "checkpoint": checkpoint,
-                        "dataset": dataset,
-                        "prompt_id": prompt_id,
-                        "prompt": rows[0]["prompt"],
-                        "dreamsim_diversity": score,
-                        "count": len(rows),
-                    }
-                )
+                outputs[key][prompt_id][variant] = _mean_pairwise_cosine_distance(embeddings)
+        del model, preprocess
+        if args.device.startswith("cuda"):
+            import torch
 
-            scores = [row["dreamsim_diversity"] for row in per_prompt if row["dreamsim_diversity"] is not None]
-            write_jsonl(out_dir / "per_prompt.jsonl", per_prompt)
-            write_json(out_dir / "summary.json", {"checkpoint": checkpoint, "dataset": dataset, "dreamsim_diversity": summarize_scores(scores)})
-            print(f"Wrote {out_dir}")
+            torch.cuda.empty_cache()
+
+    for (checkpoint, dataset), by_prompt in outputs.items():
+        per_prompt = list(by_prompt.values())
+        summaries = {
+            variant: summarize_scores([row[variant] for row in per_prompt])
+            for variant in DREAMSIM_VARIANTS
+        }
+        out = metric_output_dir(metric_root, "dreamsim", checkpoint, dataset)
+        write_jsonl(out / "per_prompt.jsonl", per_prompt)
+        write_json(out / "summary.json", {
+            "checkpoint": checkpoint,
+            "dataset": dataset,
+            "dreamsim_diversity": summaries,
+        })
+        print(f"Wrote {out}")

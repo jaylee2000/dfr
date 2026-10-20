@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .config import DEFAULT_MODEL_LOCK, DEFAULT_MODEL_ROOT
+from .metric_dreamsim import DREAMSIM_REQUIRED_FILES, DREAMSIM_VARIANTS
 from .model_assets import LOCK_VERSION, ModelAssetError, ModelLock, verify_lock
 from .model_registry import BaseModelSpec, CheckpointSpec, ModelRegistry, ModelSource, load_registry
 
@@ -127,19 +128,15 @@ def _prepare_dreamsim(model_root: Path) -> dict[str, Any]:
 
     path = (model_root / "metrics" / "dreamsim").resolve()
     path.mkdir(parents=True, exist_ok=True)
-    model, _preprocess = dreamsim(
-        dreamsim_type="dino_vitb16",
-        use_patch_model=True,
-        device="cpu",
-        cache_dir=str(path),
-    )
-    del model
-    required = [
-        "dino_vitb16_pretrain.pth",
-        "dino_vitb16_patch_lora/adapter_config.json",
-        "dino_vitb16_patch_lora/adapter_model.safetensors",
-        "facebookresearch_dino_main/hubconf.py",
-    ]
+    for dreamsim_type, use_patch_model in DREAMSIM_VARIANTS.values():
+        model, preprocess = dreamsim(
+            dreamsim_type=dreamsim_type,
+            use_patch_model=use_patch_model,
+            device="cpu",
+            cache_dir=str(path),
+        )
+        del model, preprocess
+    required = list(DREAMSIM_REQUIRED_FILES)
     _require_files("DreamSim", path, required)
     return {"path": str(path), "required": required}
 
@@ -160,6 +157,40 @@ def _prepare_inception(model_root: Path) -> dict[str, Any]:
             progress=True,
         )
     return {"path": str(path), "required": [filename]}
+
+
+def _prepare_dinov2(model_root: Path) -> dict[str, Any]:
+    path, revision = _remote_snapshot(
+        ModelSource(repo_id="facebook/dinov2-large", revision="main"),
+        model_root / "metrics" / "dinov2_vitl14",
+        allow_patterns=["config.json", "model.safetensors"],
+    )
+    required = ["config.json", "model.safetensors"]
+    _require_files("DINOv2 ViT-L/14", path, required)
+    return {
+        "path": str(path),
+        "required": required,
+        "source": {"repo_id": "facebook/dinov2-large", "requested_revision": "main", "resolved_revision": revision},
+    }
+
+
+def verify_metric_assets(lock: ModelLock) -> list[str]:
+    errors = []
+    requirements = {
+        "inception_v3": ("inception_v3_google-0cc3c7bd.pth",),
+        "dinov2_vitl14": ("config.json", "model.safetensors"),
+        "dreamsim": DREAMSIM_REQUIRED_FILES,
+        "imagereward": ("ImageReward.pt", "med_config.json"),
+        "imagereward_tokenizer": ("tokenizer_config.json", "vocab.txt"),
+        "pickscore_processor": ("config.json",),
+        "pickscore_model": ("config.json",),
+    }
+    for name, required in requirements.items():
+        try:
+            lock.metric_path(name, required=required)
+        except ModelAssetError as exc:
+            errors.append(str(exc))
+    return errors
 
 
 def _prepare_imagereward(model_root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -209,6 +240,7 @@ def _prepare_metrics(metric_names: Sequence[str], model_root: Path) -> dict[str,
             entries["dreamsim"] = _prepare_dreamsim(model_root)
         elif metric == "fid":
             entries["inception_v3"] = _prepare_inception(model_root)
+            entries["dinov2_vitl14"] = _prepare_dinov2(model_root)
         elif metric == "imagereward":
             image_reward_entry, tokenizer_entry = _prepare_imagereward(model_root)
             entries["imagereward"] = image_reward_entry
@@ -295,7 +327,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     lock = ModelLock.load(DEFAULT_MODEL_LOCK)
-    errors = verify_lock(lock)
+    errors = verify_lock(lock) + verify_metric_assets(lock)
     if errors:
         for error in errors:
             print(error)

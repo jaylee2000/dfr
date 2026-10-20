@@ -54,6 +54,7 @@ def run(args) -> None:
                 records = existing_records(
                     expected_records_for(checkpoint, dataset, manifest_dir, image_root, args.limit_prompts),
                     args.limit_images,
+                    allow_missing=True,
                 )
                 print(f"[dry-run] PickScore {checkpoint}/{dataset}: {len(records)} existing images")
         return

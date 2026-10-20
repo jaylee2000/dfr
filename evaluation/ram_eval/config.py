@@ -17,13 +17,12 @@ def _required_absolute_path(name: str) -> Path:
 RAM_ROOT = _required_absolute_path("RAM_ROOT")
 EVAL_ROOT = _required_absolute_path("EVAL_ROOT")
 OUTPUTS_ROOT = _required_absolute_path("OUTPUTS_ROOT")
-MSCOCO_ROOT = _required_absolute_path("MSCOCO_ROOT")
 
 # ROOT remains available for modules that resolve repository-owned files.
 ROOT = EVAL_ROOT
 
-DATASETS = ("geneval", "drawbench", "pickscore", "mscoco")
-PER_PROMPT_DATASETS = ("geneval", "drawbench", "pickscore")
+DATASETS = ("geneval", "drawbench", "ocr")
+PER_PROMPT_DATASETS = DATASETS
 
 DEFAULT_MANIFEST_DIR = OUTPUTS_ROOT / "manifests"
 DEFAULT_IMAGE_ROOT = OUTPUTS_ROOT / "images"
@@ -34,13 +33,10 @@ DEFAULT_METRIC_ROOT = OUTPUTS_ROOT / "metrics"
 DEFAULT_MODEL_ROOT = EVAL_ROOT / "models"
 DEFAULT_MODEL_LOCK = DEFAULT_MODEL_ROOT / "models.lock.json"
 
-DEFAULT_COCO_CAPTIONS_JSON = MSCOCO_ROOT / "annotations" / "captions_val2014.json"
-DEFAULT_COCO_IMAGE_ROOT = MSCOCO_ROOT / "val2014"
-
 DEFAULT_PROMPT_SOURCES = {
     "geneval": EVAL_ROOT / "prompts" / "geneval" / "test_metadata.jsonl",
     "drawbench": EVAL_ROOT / "prompts" / "drawbench" / "test.txt",
-    "pickscore": EVAL_ROOT / "prompts" / "pickscore" / "test.txt",
+    "ocr": RAM_ROOT / "prompts" / "ocr" / "test.txt",
 }
 
 # Backward-compatible Python name; these paths are no longer configurable.
