@@ -1,4 +1,4 @@
-"""Prefetch and verify every model used by ``configs/defaults/pickscore_sd3.yaml``.
+"""Prefetch and verify models for optional PickScore training.
 
 Run this command on an internet-connected host before submitting an offline
 training job.  Hugging Face snapshots are downloaded into the same cache roots
@@ -10,7 +10,6 @@ import gc
 import os
 import subprocess
 import sys
-import urllib.request
 from pathlib import Path
 
 
@@ -22,12 +21,6 @@ HF_HUB_CACHE = Path(os.environ.get("HF_HUB_CACHE", MODELS / ".huggingface" / "hu
 SD35_REPO = "stabilityai/stable-diffusion-3.5-medium"
 PICKSCORE_PROCESSOR_REPO = "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
 PICKSCORE_MODEL_REPO = "yuvalkirstain/PickScore_v1"
-AESTHETIC_CLIP_REPO = "openai/clip-vit-large-patch14"
-AESTHETIC_NAME = "sac+logos+ava1-l14-linearMSE.pth"
-AESTHETIC_URL = (
-    "https://github.com/christophschuhmann/improved-aesthetic-predictor/"
-    "raw/main/sac%2Blogos%2Bava1-l14-linearMSE.pth"
-)
 PROCESSOR_FILES = (
     "config.json",
     "merges.txt",
@@ -40,32 +33,22 @@ PROCESSOR_FILES = (
 PYTORCH_MODEL_FILES = (*PROCESSOR_FILES, "model.safetensors")
 
 
-def download_file(url: str, destination: Path) -> None:
-    if destination.is_file() and destination.stat().st_size:
-        return
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_suffix(destination.suffix + ".part")
-    urllib.request.urlretrieve(url, temporary)
-    os.replace(temporary, destination)
-
-
 def prefetch() -> None:
     from huggingface_hub import snapshot_download
 
     MODELS.mkdir(parents=True, exist_ok=True)
     HF_HUB_CACHE.mkdir(parents=True, exist_ok=True)
 
-    print("[1/6] Stable Diffusion 3.5 Medium", flush=True)
+    print("[1/4] Stable Diffusion 3.5 Medium", flush=True)
     # training_sd3.py passes cache_dir="models" for the diffusion pipeline.
     snapshot_download(repo_id=SD35_REPO, cache_dir=str(MODELS))
 
     downloads = (
         (PICKSCORE_PROCESSOR_REPO, PROCESSOR_FILES),
         (PICKSCORE_MODEL_REPO, PYTORCH_MODEL_FILES),
-        (AESTHETIC_CLIP_REPO, PYTORCH_MODEL_FILES),
     )
     for step, (repo_id, allow_patterns) in enumerate(downloads, start=2):
-        print(f"[{step}/6] Hugging Face model: {repo_id}", flush=True)
+        print(f"[{step}/4] Hugging Face model: {repo_id}", flush=True)
         # Reward classes use the default Hugging Face cache (HF_HUB_CACHE),
         # not the pipeline's explicit models/ cache.
         snapshot_download(
@@ -74,10 +57,7 @@ def prefetch() -> None:
             allow_patterns=allow_patterns,
         )
 
-    print("[5/6] LAION aesthetic predictor", flush=True)
-    download_file(AESTHETIC_URL, MODELS / AESTHETIC_NAME)
-
-    print("[6/6] ImageReward v1.0", flush=True)
+    print("[4/4] ImageReward v1.0", flush=True)
     from reward_models.image_reward import rm_load
 
     scorer = rm_load()
@@ -86,7 +66,7 @@ def prefetch() -> None:
 
 
 def verify_offline() -> None:
-    """Load all reward scorers without permitting network access."""
+    """Load PickScore and ImageReward without permitting network access."""
     from huggingface_hub import snapshot_download
 
     snapshot_download(repo_id=SD35_REPO, cache_dir=str(MODELS), local_files_only=True)
@@ -94,15 +74,13 @@ def verify_offline() -> None:
     for repo_id in (
         PICKSCORE_PROCESSOR_REPO,
         PICKSCORE_MODEL_REPO,
-        AESTHETIC_CLIP_REPO,
     ):
         snapshot_download(repo_id=repo_id, cache_dir=str(HF_HUB_CACHE), local_files_only=True)
 
-    from reward_models import AestheticScore, ImageReward, PickScore
+    from reward_models import ImageReward, PickScore
 
     for name, scorer_type in (
         ("PickScore", PickScore),
-        ("AestheticScore", AestheticScore),
         ("ImageReward", ImageReward),
     ):
         scorer = scorer_type()

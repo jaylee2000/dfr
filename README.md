@@ -34,7 +34,7 @@ configs/
   geneval/{ram,dfr_ds,dfr_mmd,dfr_fd}.yaml
   ocr/{ram,dfr_ds,dfr_mmd,dfr_fd}.yaml
 prompts/                            training and validation prompts (GenEval, OCR)
-reward_models/                      GenEval, OCR, ImageReward, Aesthetic, CLIP, PickScore
+reward_models/                      GenEval, OCR, ImageReward, PickScore
 scripts/
   training_sd3.py                   training entry point (RAM loss, rewards, DFR terms)
   dreamsim_diversity.py             DFR-DS
@@ -144,9 +144,9 @@ or `RAM_PADDLEOCR_CACHE_DIR` is set (see `.env.example`). Do not let several
 ranks perform a first download concurrently: they share temporary file names
 and can corrupt each other's files.
 
-The optional `AestheticScore`, `ClipScore` and `PickScore` rewards are not used
-by the paper configs; `scripts/prefetch_pickscore_models.py` downloads the
-models they need.
+The optional `PickScore` training reward is not used by the paper configs;
+`scripts/prefetch_pickscore_models.py` downloads its models together with
+SD3.5 Medium and ImageReward.
 
 ## Training
 
@@ -405,8 +405,7 @@ from [Flow-GRPO](https://github.com/yifan123/flow_grpo) and
 from Flow-GRPO (MIT, © 2025 Jie Liu): the OCR and evaluation prompt files are
 byte-identical copies of its `dataset/` files, and the GenEval training files
 are derived from its GenEval metadata. The DreamSim, ImageReward, PickScore and
-OpenCLIP wrappers use the official packages; the aesthetic predictor is the
-[LAION improved-aesthetic-predictor](https://github.com/christophschuhmann/improved-aesthetic-predictor).
+OpenCLIP wrappers use the official packages.
 The six FD feature spaces follow Yang et al., *Representation Fréchet Loss for
 Visual Generation*.
 

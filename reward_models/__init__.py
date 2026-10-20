@@ -30,39 +30,6 @@ class Reward(nn.Module, ABC):
         """
 
 
-class AestheticScore(Reward):
-    def __init__(self):
-        super().__init__()
-        from transformers import CLIPModel, CLIPProcessor
-
-        self.clip = CLIPModel.from_pretrained("openai/clip-vit-large-patch14")
-        self.processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
-        self.mlp = nn.Sequential(
-            nn.Linear(768, 1024),
-            nn.Dropout(0.2),
-            nn.Linear(1024, 128),
-            nn.Dropout(0.2),
-            nn.Linear(128, 64),
-            nn.Dropout(0.1),
-            nn.Linear(64, 16),
-            nn.Linear(16, 1),
-        )
-        state_dict = torch.load("models/sac+logos+ava1-l14-linearMSE.pth", map_location="cpu", weights_only=False)
-        # Remove 'layers.' prefix from keys to match nn.Sequential structure
-        state_dict = {k.replace("layers.", ""): v for k, v in state_dict.items()}
-        self.mlp.load_state_dict(state_dict)
-
-    def forward(self, images, prompts):
-        device = images.device
-        images = (images * 255).round().clamp(0, 255).to(torch.uint8)
-        inputs = self.processor(images=images, return_tensors="pt")
-        inputs = {k: v.to(device) for k, v in inputs.items()}
-        embed = self.clip.get_image_features(**inputs)
-        # normalize embedding
-        embed = embed / torch.linalg.vector_norm(embed, dim=-1, keepdim=True)
-        return self.mlp(embed).squeeze(1)
-
-
 class ImageReward(Reward):
     def __init__(self):
         super().__init__()
@@ -87,17 +54,6 @@ class OCR(Reward):
         np_images = (images * 255).round().clamp(0, 255).to(torch.uint8).permute(0, 2, 3, 1).cpu().numpy()
         scores = self.scorer(list(np_images), prompts)
         return torch.tensor(scores, dtype=torch.float32, device=device)
-
-
-class ClipScore(Reward):
-    def __init__(self):
-        super().__init__()
-        from .clip_scorer import ClipScorer
-
-        self.scorer = ClipScorer(device="cpu")
-
-    def forward(self, images, prompts):
-        return self.scorer(images, prompts)
 
 
 class PickScore(Reward):
