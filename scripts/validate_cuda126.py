@@ -11,7 +11,6 @@ EXPECTED_DISTRIBUTIONS = {
     "paddlepaddle-gpu": "3.3.1",
     "torch": "2.6.0+cu126",
     "torchvision": "0.21.0+cu126",
-    "vendi-score": "0.0.3",
 }
 SUPPORTED_CAPABILITIES = {(7, 5), (8, 0), (8, 9), (9, 0)}
 
@@ -65,7 +64,6 @@ def main():
     import peft  # noqa: F401
     import transformers  # noqa: F401
     import wandb  # noqa: F401
-    from vendi_score import vendi  # noqa: F401
     import reward_models  # noqa: F401
 
     print("CUDA 12.6 environment validation passed")

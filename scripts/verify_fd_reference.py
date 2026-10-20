@@ -23,6 +23,8 @@ def resolve_config(name, cache_dir=None, seed=None, fd_reference_seed=None):
 
 
 def verify(config):
+    if not fd_reward.fd_is_enabled(config):
+        return None
     directory = fd_reference.check_metadata(config)
     spaces = fd_reward.fd_loaded_types(config)
     fd_reference.load_reference_features(config, spaces, map_location="meta")
@@ -52,9 +54,15 @@ def main():
                 fd_reference_seed=args.fd_reference_seed,
             )
         )
-        directories.append(directory.resolve())
-        print(f"PASS {name}: {directory}")
+        if directory is None:
+            print(f"SKIP {name}: no FD reference required")
+        else:
+            directories.append(directory.resolve())
+            print(f"PASS {name}: {directory}")
 
+    if not directories:
+        print("No FD references required")
+        return
     if len(set(directories)) != 1:
         raise RuntimeError(f"Configs do not share one FD reference: {directories}")
     print(f"Shared FD reference ready: {directories[0]}")

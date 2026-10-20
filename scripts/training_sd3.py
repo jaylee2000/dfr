@@ -45,7 +45,6 @@ import fd_reference
 import fd_reward
 from generation import generate_images, sampling_batch_size
 from loss_utils import adapter_host, model_forward
-from vendi_diversity import grouped_vendi_scores
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -454,7 +453,10 @@ def sample_epoch(
     dreamsim_tensors = {}
     masked_tensors = {"groups/zero_variance_mean_reward": (group_mean_reward, zero_variance)}
     if dreamsim_scorers is not None and dreamsim_diversity.dreamsim_is_active_epoch(config, epoch):
-        scored = dreamsim_scorers.compute_epoch(images, G, latents=latents)
+        scored = dreamsim_scorers.compute_epoch(
+            images, G, latents=latents,
+            type_names=dreamsim_diversity.training_types(config, epoch),
+        )
         for name, (diversity, model_advantages) in scored.items():
             dreamsim_tensors[f"dreamsim_diversity/{name}"] = diversity
             dreamsim_tensors[f"dreamsim_advantage_abs/{name}"] = model_advantages.abs()
@@ -674,21 +676,20 @@ def validate(
 
 def validate_dreamsim_diversity(
     pipe, diversity_prompts, diversity_prompt_indices, config, step,
-    dreamsim_scorers, guidance_scale, accelerator, vendi_encoder=None,
+    dreamsim_scorers, accelerator,
 ):
-    """Measure DreamSim and Inception Vendi diversity on the evaluation adapter.
+    """Measure the selected DreamSim variants on the evaluation adapter.
 
     Generates ``dreamsim_eval_samples_per_prompt`` images for each rank-local
-    prompt at a single CFG value and logs mean diversity per variant.  Unlike
+    prompt at CFG 4.5 and logs mean diversity per variant. Unlike
     the training-time metric this reflects the lagged ``evaluation`` adapter at
     ``num_eval_inference_steps``, matching the policy the offline
     ``evaluation/`` pipeline scores.
 
     DreamSim diversity is a mean over pairs of i.i.d. generations, so its
-    expectation is independent of the group size. Vendi Score is an effective
-    sample count bounded by the group size, so train/eval values with different
-    sample counts must be interpreted separately.
+    expectation is independent of the group size.
     """
+    guidance_scale = 4.5
     samples_per_prompt = config.dreamsim_eval_samples_per_prompt
     bs = (
         config.sampling_batch_size // 2
@@ -710,11 +711,9 @@ def validate_dreamsim_diversity(
 
     image_batches = []
     latent_batches = []
-    use_latents = dreamsim_scorers is not None and "latent" in dreamsim_scorers
-    requires_images = (
-        vendi_encoder is not None
-        or (dreamsim_scorers is not None and dreamsim_scorers.requires_images)
-    )
+    type_names = config.dreamsim_log_types
+    use_latents = "latent" in type_names
+    requires_images = any(name != "latent" for name in type_names)
     for i in range(0, len(prompts_flat), bs):
         batch_prompts = prompts_flat[i:i + bs]
         generators = [
@@ -748,16 +747,12 @@ def validate_dreamsim_diversity(
         metric_tensors = {}
         if dreamsim_scorers is not None:
             scored = dreamsim_scorers.compute_epoch(
-                images, samples_per_prompt, with_advantages=False, latents=latents
+                images, samples_per_prompt, with_advantages=False, latents=latents, type_names=type_names
             )
             metric_tensors.update({
                 f"dreamsim_diversity/{name}": diversity
                 for name, (diversity, _) in scored.items()
             })
-        if vendi_encoder is not None:
-            metric_tensors["vendi_score/inception_v3"] = grouped_vendi_scores(
-                vendi_encoder.embed(images), samples_per_prompt
-            )
     else:
         # A rank can receive no prompts when they do not divide evenly; it still
         # takes part in the reduction with an empty contribution.
@@ -767,12 +762,8 @@ def validate_dreamsim_diversity(
                 f"dreamsim_diversity/{name}": torch.empty(
                     0, device=device, dtype=torch.float32
                 )
-                for name in dreamsim_scorers.type_names
+                for name in type_names
             })
-        if vendi_encoder is not None:
-            metric_tensors["vendi_score/inception_v3"] = torch.empty(
-                0, device=device, dtype=torch.float32
-            )
 
     metrics = reduce_tensor_means(accelerator, metric_tensors)
     if accelerator.is_main_process:
@@ -1208,12 +1199,7 @@ def main(config, output_dir, resume_from_checkpoint=None, stop_after_epoch=None)
     # changes, and sharded so each rank owns whole prompt groups.
     diversity_prompt_indices = []
     diversity_prompts = []
-    vendi_eval_enabled = (
-        fd_enabled
-        and "inception_v3" in fd_reward.fd_loaded_types(config)
-        and config.dreamsim_eval_num_prompts > 0
-    )
-    if dreamsim_diversity.dreamsim_eval_is_enabled(config) or vendi_eval_enabled:
+    if dreamsim_diversity.dreamsim_eval_is_enabled(config):
         all_val_prompts = load_prompts(Path("prompts") / config.prompts / "test.txt")
         num_diversity_prompts = min(config.dreamsim_eval_num_prompts, len(all_val_prompts))
         diversity_prompt_indices = list(range(num_diversity_prompts))[
@@ -1348,10 +1334,7 @@ def main(config, output_dir, resume_from_checkpoint=None, stop_after_epoch=None)
                 # Release decoded validation images and the temporary quality
                 # scorer before beginning the diversity pass.
                 release_cuda_memory()
-                if (
-                    dreamsim_diversity.dreamsim_eval_is_enabled(config)
-                    or vendi_eval_enabled
-                ):
+                if dreamsim_diversity.dreamsim_eval_is_enabled(config):
                     validate_dreamsim_diversity(
                         pipe,
                         diversity_prompts,
@@ -1359,12 +1342,7 @@ def main(config, output_dir, resume_from_checkpoint=None, stop_after_epoch=None)
                         config,
                         epoch,
                         dreamsim_scorers,
-                        dreamsim_diversity.eval_guidance_scale(config, eval_guidance_scales),
                         accelerator,
-                        vendi_encoder=(
-                            fd_spaces["inception_v3"].encoder
-                            if vendi_eval_enabled else None
-                        ),
                     )
                     release_cuda_memory()
             set_adapter(model, "default")
@@ -1406,24 +1384,23 @@ def main(config, output_dir, resume_from_checkpoint=None, stop_after_epoch=None)
                 fd_keys = sorted(key for key in sample_metrics if key.startswith("fd"))
                 accelerator.print("FD metrics under train/: " + ", ".join(fd_keys))
             for name in fd_spaces.names:
+                if f"fd_resid/{name}" not in sample_metrics:
+                    continue
                 accelerator.print(
-                    f"[Epoch {epoch}] fd[{name}]={sample_metrics[f'fd/{name}']:.4g} "
-                    f"fd_resid={sample_metrics[f'fd_resid/{name}']:.4g} "
+                    f"[Epoch {epoch}] fd_resid[{name}]={sample_metrics[f'fd_resid/{name}']:.4g} "
+                    f"fd_mean={sample_metrics[f'fd_mean/{name}']:.4g} "
+                    f"fd={sample_metrics[f'fd/{name}']:.4g} "
                     f"fd_ratio={sample_metrics[f'fd_ratio/{name}']:.4g} "
-                    f"spread_ratio={sample_metrics[f'fd_reward_spread_ratio/{name}']:.4g} "
                     f"cond_S={sample_metrics[f'fd_cond_S/{name}']:.3g} "
                     f"clamp_frac={sample_metrics[f'fd_clamp_frac/{name}']:.3g}"
                 )
-            accelerator.print(
-                f"[Epoch {epoch}] fd combined: spread_ratio={sample_metrics['fd_reward_spread_ratio']:.4g} "
-                f"ratio_mean={sample_metrics['fd_ratio_mean']:.4g} "
-                f"rank_diff={sample_metrics['fd_rank_max_diff']:.3g} "
-                f"age={sample_metrics['fd_ema_age']:.0f}"
-                + (
-                    f" fd_adv_abs={sample_metrics['fd_advantage_abs']:.4g}"
-                    if "fd_advantage_abs" in sample_metrics else ""
+            if "fd_advantage_abs" in sample_metrics:
+                accelerator.print(
+                    f"[Epoch {epoch}] fd_adv_abs={sample_metrics['fd_advantage_abs']:.4g} "
+                    f"spread_ratio={sample_metrics['fd_reward_spread_ratio']:.4g} "
+                    f"rank_diff={sample_metrics['fd_rank_max_diff']:.3g} "
+                    f"age={sample_metrics['fd_ema_age']:.0f}"
                 )
-            )
 
         if accelerator.is_main_process:
             accelerator.log({f"train/{k}": v for k, v in sample_metrics.items()}, step=epoch)

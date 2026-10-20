@@ -169,8 +169,8 @@ main-table values.
 
 ### 1. Prepare the FD reference set
 
-Every config logs FD to the base model in six feature spaces, so **every**
-config needs the FD reference set first, not only DFR-FD. The reference is
+DFR-FD needs a prepared reference set for its training encoders. RAM, DFR-DS
+and DFR-MMD do not need one unless FD diagnostics are enabled. The reference is
 generated once per task from the base model (`fd_reference_seed: 0`) and shared
 by all configs and seeds of that task. It is 25 × 1,152 base-model images,
 about 8 A100 GPU-hours per task, and about 23 GB on disk.
@@ -185,8 +185,9 @@ uv run --no-sync -- accelerate launch --multi_gpu --num_processes 4 \
 
 The cache lands in `models/fd_stats/<hash>/`, keyed by the sampling settings
 (model, resolution, steps, guidance, prompts, epoch sizes, reference seed).
-A killed run resumes at the missing epochs. Training refuses to start without a
-matching reference and names the command to run.
+A killed run resumes at the missing epochs. Preparation defaults to the active
+FD spaces; `--spaces` selects an explicit list. Runs using FD refuse to start
+without a matching reference and name the command to run.
 
 ### 2. Train
 
@@ -214,13 +215,44 @@ uv run --no-sync -- accelerate launch --multi_gpu --num_processes 4 \
   are per process and only trade memory for speed. The configs' values were
   chosen for 96 GB GPUs; lower them on smaller ones.
 - **Validation.** Every `eval_every_n_epochs`, the task reward is measured on
-  the test prompts at each of `eval_guidance_scales`, together with ImageReward
-  and DreamSim diversity.
+  the test prompts at each of `eval_guidance_scales`, together with ImageReward.
+  These CFG values remain configurable through YAML or CLI overrides. A separate
+  DreamSim diversity pass is opt-in and always uses CFG 4.5.
 - **Stopping early.** `--stop_after_epoch N` stops after the checkpoint of
   epoch `N` (a multiple of `eval_every_n_epochs`).
 - **W&B.** Off by default. Pass `--wandb_project <name>` (and optionally
   `--wandb_entity <team>`, or set `WANDB_ENTITY`) to log metrics and validation
   images.
+
+### Optional diagnostics
+
+By default, training loads only the encoders its reward needs: none for RAM or
+DFR-MMD, the DINO patch branch for DFR-DS, and the configured FD training spaces
+for DFR-FD. Scalar gradient norms and parameter-update statistics remain enabled.
+
+Select extra measurements independently through YAML or CLI overrides:
+
+| Setting | Effect |
+| --- | --- |
+| `fd_log_types` | additional FD spaces; default `[]` |
+| `fd_log_every_n_epochs` | interval for those spaces; `0` disables them |
+| `dreamsim_log_types` | extra DreamSim branches; default `[]` |
+| `dreamsim_log_every_n_epochs` | training measurement interval for those branches; `0` disables them |
+| `dreamsim_eval_num_prompts` | separate diversity-validation pass at CFG 4.5 for the selected branches; `0` disables it |
+
+For example, to measure OpenCLIP diversity every five training epochs:
+
+```bash
+uv run --no-sync -- accelerate launch scripts/training_sd3.py geneval/ram \
+    --dreamsim_log_types '[open_clip_vitb32]' --dreamsim_log_every_n_epochs 5
+```
+
+FD diagnostics also need a prepared reference for their selected spaces. Every
+measured FD space reports residual covariance distance (`fd_resid`), mean distance
+(`fd_mean`), and pooled statistics (`fd`, `fd_cov`, `fd_ratio`) together. The
+pooled null-FD used to normalize DFR-FD rewards is unchanged.
+Keep the active FD space set fixed when resuming an existing checkpoint; use a
+new output directory to change that set.
 
 ### Slurm
 
@@ -352,8 +384,7 @@ unit-normalized terminal latents. DFR-FD combines the mean and residual
 covariance terms, normalizing each space by the base model's null-FD.
 FD encoders:
 `dinov2_vitl14`, `inception_v3`, `convnextv2_base`, `mae_vitl16`,
-`siglip2_so400m`, `clip_vitl14`. When `inception_v3` is loaded, the Inception
-Vendi Score is logged as well.
+`siglip2_so400m`, `clip_vitl14`.
 
 ## Troubleshooting
 

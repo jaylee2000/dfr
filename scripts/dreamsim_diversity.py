@@ -114,7 +114,6 @@ def apply_dreamsim_config_defaults(config):
         "dreamsim_log_every_n_epochs": 0,
         "dreamsim_eval_num_prompts": 0,
         "dreamsim_eval_samples_per_prompt": None,
-        "dreamsim_eval_guidance_scale": None,
         "dreamsim_cache_dir": "models/dreamsim",
         "dreamsim_batch_size": None,
     }
@@ -210,9 +209,8 @@ def dreamsim_is_enabled(config):
 def dreamsim_is_active_epoch(config, epoch):
     """True when diversity should be computed in ``sample_epoch`` for ``epoch``.
 
-    When the reward term is on, its advantage changes training and must be computed
-    every epoch; ``dreamsim_log_every_n_epochs`` then has no effect and the
-    metrics are logged every epoch because they are already paid for.
+    The training branch runs every epoch when its reward is enabled.
+    Additional branches follow ``dreamsim_log_every_n_epochs``.
     """
     if dreamsim_reward_is_enabled(config):
         return True
@@ -225,17 +223,23 @@ def loaded_types(config):
 
     The trained-on variant is always included so a run logs what it optimizes.
     """
-    names = list(config.dreamsim_log_types)
+    log_enabled = dreamsim_train_logging_is_enabled(config) or dreamsim_eval_is_enabled(config)
+    names = list(config.dreamsim_log_types) if log_enabled else []
     if dreamsim_reward_is_enabled(config) and DEFAULT_DREAMSIM_TYPE not in names:
         names.insert(0, DEFAULT_DREAMSIM_TYPE)
     return names
 
 
-def eval_guidance_scale(config, eval_guidance_scales):
-    """Resolve the single CFG value used for validation-time diversity."""
-    if config.dreamsim_eval_guidance_scale is not None:
-        return float(config.dreamsim_eval_guidance_scale)
-    return float(eval_guidance_scales[0])
+def training_types(config, epoch):
+    """Training branch plus diagnostic branches due at this epoch."""
+    log_due = (
+        dreamsim_train_logging_is_enabled(config)
+        and epoch % config.dreamsim_log_every_n_epochs == 0
+    )
+    names = list(config.dreamsim_log_types) if log_due else []
+    if dreamsim_reward_is_enabled(config) and DEFAULT_DREAMSIM_TYPE not in names:
+        names.insert(0, DEFAULT_DREAMSIM_TYPE)
+    return names
 
 
 def eval_image_seed(seed, prompt_index, sample_index):
@@ -417,21 +421,27 @@ class DreamSimScorers:
         return any(name != "latent" for name in self.scorers)
 
     @torch.no_grad()
-    def compute_epoch(self, images, num_samples_per_prompt, with_advantages=True, *, latents=None):
+    def compute_epoch(
+        self, images, num_samples_per_prompt, with_advantages=True, *, latents=None, type_names=None,
+    ):
         """Score aligned images/terminal latents; images may be None for latent-only scoring."""
-        if "latent" in self and latents is None:
+        names = self.type_names if type_names is None else list(dict.fromkeys(type_names))
+        unknown = [name for name in names if name not in self]
+        if unknown:
+            raise ValueError(f"DreamSim variants were not loaded: {unknown}")
+        if "latent" in names and latents is None:
             raise ValueError("latent diversity requires terminal latents")
-        if self.requires_images and images is None:
+        if any(name != "latent" for name in names) and images is None:
             raise ValueError("DreamSim image encoders require images")
         if images is not None and latents is not None and len(images) != len(latents):
             raise ValueError("images and latents must have matching batch sizes")
         return {
-            name: scorer.compute_epoch(
+            name: self.scorers[name].compute_epoch(
                 latents if name == "latent" else images,
                 num_samples_per_prompt,
                 with_advantages=with_advantages,
             )
-            for name, scorer in self.scorers.items()
+            for name in names
         }
 
 
@@ -450,7 +460,7 @@ def center_by_group(values, group_size):
 
 
 # ---------------------------------------------------------------------------
-# Gating on the task reward
+# Task-reward group diagnostics
 # ---------------------------------------------------------------------------
 
 

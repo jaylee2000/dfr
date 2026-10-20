@@ -53,22 +53,13 @@ beta2: 0.99
 ema_decay: 0.9
 ema_warmup_rate: 0.01
 
-# Monitoring
-
-# Diagnostic diversity + FD logging. These keys are logging-only: they never
-# enter the advantage (that depends on dreamsim_scale / fd_scale), so historical
-# runs reproduce their science regardless. Kept on by default so any re-run
-# records diversity across all metrics.
-dreamsim_log_types: ["dino_vitb16_patch", "clip_vitb32", "open_clip_vitb32", "ensemble"]
-dreamsim_log_every_n_epochs: 1
-dreamsim_eval_num_prompts: 32
+# Optional diagnostics. Required training encoders are loaded automatically.
+dreamsim_log_types: []
+dreamsim_log_every_n_epochs: 0
+dreamsim_eval_num_prompts: 0
 dreamsim_eval_samples_per_prompt: 8
-dreamsim_eval_guidance_scale: 2
-# All six FD encoders. Trained encoders are logged automatically; the log-only
-# ones must be named here (e.g. dinov2/inception/mae for a convnext/siglip/clip
-# run), so the default lists all six and FD-training experiments need not add them.
-fd_log_types: ["convnextv2_base", "siglip2_so400m", "clip_vitl14", "dinov2_vitl14", "inception_v3", "mae_vitl16"]
-fd_log_every_n_epochs: 1
+fd_log_types: []
+fd_log_every_n_epochs: 0
 # The FD reference samples (base-model images) use their own fixed seed, so all
 # training seeds and configs of a task share one reference set, generated once.
 fd_reference_seed: 0

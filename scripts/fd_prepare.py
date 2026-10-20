@@ -1,8 +1,8 @@
 """One-shot preparation of the FD reference cache.
 
-Generates the base-model reference images once, embeds them with every
-representation space, computes the per-space null-FD and writes the cache
-that every training run reads (layout in ``fd_reference.py``)::
+Generates the base-model reference images once, embeds them in the configured
+FD spaces, computes the per-space null-FD and writes the cache read by runs
+that use FD (layout in ``fd_reference.py``)::
 
     python scripts/fd_prepare.py <config> [--stats-only] [--spaces a,b] [--key value ...]
     accelerate launch --multi_gpu --num_processes N scripts/fd_prepare.py <config> [...]
@@ -16,7 +16,7 @@ its output exists:
   training settings, the images all-gathered and written by the main process
   as one uint8 file.  A killed job re-runs only the missing epochs.
 - **embed**: one space at a time, sharded across ranks by epoch file; only
-  spaces without a feature file run (``--spaces`` restricts the set).
+  spaces without a feature file run (``--spaces`` overrides the configured set).
 - **stats**: main process only; the even/odd null-FD of every feature file
   present, written to ``null_fd.json``.  ``--stats-only`` runs this alone.
 
@@ -217,7 +217,9 @@ def main(config, stats_only=False, spaces=None):
     config = resolve_config(config, num_processes)
     if config.fd_init_epochs < 2:
         raise ValueError("fd_init_epochs must be at least 2: the null-FD splits the reference epochs in two halves")
-    spaces = list(spaces or fd_encoders.FD_ENCODERS)
+    spaces = list(fd_reward.fd_loaded_types(config) if spaces is None else spaces)
+    if not spaces:
+        raise ValueError("This config needs no FD reference; select FD diagnostics or pass --spaces explicitly")
     for space in spaces:
         fd_encoders.resolve_fd_type(space)
 
@@ -273,7 +275,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("config", type=str, help="config name (without .yaml)")
     parser.add_argument("--stats-only", action="store_true", help="recompute null_fd.json from the feature files")
-    parser.add_argument("--spaces", type=str, default=None, help="comma-separated registry names; default all six")
+    parser.add_argument("--spaces", type=str, default=None, help="comma-separated registry names; default active FD spaces")
     args, overrides = parser.parse_known_args()
     config = load_config(args.config)
     config.update(training_sd3.parse_overrides(overrides))

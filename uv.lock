@@ -1540,7 +1540,6 @@ dependencies = [
     { name = "torch" },
     { name = "torchvision" },
     { name = "transformers" },
-    { name = "vendi-score" },
     { name = "wandb" },
 ]
 
@@ -1578,7 +1577,6 @@ requires-dist = [
     { name = "torch", specifier = "==2.6.0", index = "https://download.pytorch.org/whl/cu126" },
     { name = "torchvision", specifier = "==0.21.0", index = "https://download.pytorch.org/whl/cu126" },
     { name = "transformers", specifier = "==4.57.6" },
-    { name = "vendi-score", specifier = "==0.0.3" },
     { name = "wandb", specifier = "==0.19.8" },
 ]
 
@@ -1963,17 +1961,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/53/0c/06f8b233b8fd13b9e
 wheels = [
     { url = "https://files.pythonhosted.org/packages/7f/3e/5db95bcf282c52709639744ca2a8b149baccf648e39c8cc87553df9eae0c/urllib3-2.7.0-py3-none-any.whl", hash = "sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897", size = 131087, upload-time = "2026-05-07T16:13:17.151Z" },
 ]
-
-[[package]]
-name = "vendi-score"
-version = "0.0.3"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "numpy" },
-    { name = "scikit-learn" },
-    { name = "scipy" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/7f/4c/ffff6368e4f13a17b8b65df59c868f6a2c8c9feadaaa203e7b6ac5e5f659/vendi-score-0.0.3.tar.gz", hash = "sha256:7b133fd293d63038aea032b2933c68a7040991ee91d9b953fb6b1ede43526c53", size = 13158, upload-time = "2022-08-30T15:58:35.418Z" }
 
 [[package]]
 name = "wandb"

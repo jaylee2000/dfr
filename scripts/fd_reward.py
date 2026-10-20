@@ -31,7 +31,6 @@ from accelerate.utils import broadcast
 from distributed_metrics import reduce_max
 from dreamsim_diversity import center_by_group
 from fd_encoders import DEFAULT_FD_TYPE, resolve_fd_type
-from vendi_diversity import grouped_vendi_scores
 
 
 # ---------------------------------------------------------------------------
@@ -91,8 +90,7 @@ def apply_fd_config_defaults(config):
         "fd_shrinkage": 0.02,
         "fd_clamp": 10.0,
         "fd_eig_floor": 0.0,
-        # Off unless a config asks for it, like dreamsim_log_every_n_epochs, so
-        # existing configs are unaffected.  A nonzero fd_scale forces every epoch.
+        # Diagnostic spaces follow this interval; training spaces run every epoch.
         "fd_log_every_n_epochs": 0,
         "fd_cache_dir": "models/fd_stats",
         "fd_encoder_cache_dir": "models/fd_encoders",
@@ -174,9 +172,9 @@ def apply_fd_config_defaults(config):
 
 
 def fd_loaded_types(config):
-    """Trained spaces first, then the log-only ones; each name once."""
-    names = list(config.fd_train_types)
-    for name in config.fd_log_types:
+    """Active training spaces, followed by enabled diagnostic spaces."""
+    names = list(config.fd_train_types) if fd_reward_is_enabled(config) else []
+    for name in config.fd_log_types if fd_logging_is_enabled(config) else []:
         if name not in names:
             names.append(name)
     return names
@@ -189,7 +187,7 @@ def fd_reward_is_enabled(config):
 
 def fd_logging_is_enabled(config):
     """True when FD is measured during ``sample_epoch`` without entering the advantage."""
-    return config.fd_log_every_n_epochs > 0
+    return bool(config.fd_log_types) and config.fd_log_every_n_epochs > 0
 
 
 def fd_is_enabled(config):
@@ -200,14 +198,13 @@ def fd_is_enabled(config):
 def fd_is_active_epoch(config, epoch):
     """True when the FD term is computed in ``sample_epoch`` for ``epoch``.
 
-    With a nonzero scale the term changes training and is computed every
-    epoch; ``fd_log_every_n_epochs`` then has no effect.  On inactive epochs
-    nothing is embedded and the EMA is not updated.
+    Training spaces run every epoch when the reward is enabled. Diagnostic
+    spaces follow ``fd_log_every_n_epochs``; their EMA updates only when measured.
     """
     if fd_reward_is_enabled(config):
         return True
     interval = config.fd_log_every_n_epochs
-    return interval > 0 and epoch % interval == 0
+    return fd_logging_is_enabled(config) and epoch % interval == 0
 
 
 # ---------------------------------------------------------------------------
@@ -476,7 +473,8 @@ def compute_fd_reward(features, group_size, moments, reference, config):
     """Per-sample FD reward and the epoch's FD values from the *previous* EMA state.
 
     ``features`` are the epoch's gathered features ``(n, d)`` in contiguous
-    prompt groups; the caller updates the EMA after this call.
+    prompt groups; the caller updates the EMA after this call. Each measured
+    space reports both pooled FD and residual covariance distance.
     """
     if not moments.is_initialized():
         raise RuntimeError("FdMoments must be warm-started before computing rewards")
@@ -580,7 +578,7 @@ class FdSpaces:
         self.reference_key = reference_key
         self.spaces = {}
         for name in fd_loaded_types(config):
-            trained = name in config.fd_train_types
+            trained = fd_reward_is_enabled(config) and name in config.fd_train_types
             weight = config.fd_train_weights[config.fd_train_types.index(name)] if trained else 0.0
             self.spaces[name] = FdSpace(
                 name=name, encoder=None, reference=None, moments=FdMoments(), null_fd=None,
@@ -644,7 +642,7 @@ class FdEpochResult:
     advantage_delta: torch.Tensor  # local (n_local,) term to add, or None at scale zero
     tensors: dict  # per-sample local tensors, reduced to means by the caller
     scalars: dict  # identical on every rank
-    combined: torch.Tensor  # the gathered (n,) float64 combined reward at unit scale
+    combined: torch.Tensor | None  # gathered reward at unit scale, or None for diagnostics only
 
 
 class FdTerm:
@@ -686,10 +684,10 @@ class FdTerm:
         ratios = []
         pending_updates = []
         for space in self.spaces:
+            if not space.trained and epoch % config.fd_log_every_n_epochs != 0:
+                continue
             name = space.name
             features = space.encoder.embed(images)
-            if name == "inception_v3":
-                tensors["vendi_score/inception_v3"] = grouped_vendi_scores(features, G)
             features_all = accelerator.gather(features)
             n_local = features.shape[0]
             local = slice(rank * n_local, (rank + 1) * n_local)
@@ -697,11 +695,11 @@ class FdTerm:
 
             out = compute_fd_reward(features_all, G, space.moments, space.reference, config)
             centered = center_by_group(out.reward, G)
-            scalars[f"fd/{name}"] = out.fd
             scalars[f"fd_mean/{name}"] = out.fd_mean
-            scalars[f"fd_cov/{name}"] = out.fd_cov
             scalars[f"fd_resid/{name}"] = out.fd_resid
             scalars[f"fd_null/{name}"] = space.null_fd
+            scalars[f"fd/{name}"] = out.fd
+            scalars[f"fd_cov/{name}"] = out.fd_cov
             scalars[f"fd_ratio/{name}"] = out.fd / space.null_fd
             ratios.append(out.fd / space.null_fd)
             scalars[f"fd_reward_spread_ratio/{name}"] = (centered.std(correction=0) / pre_fd_std).item()
@@ -718,22 +716,18 @@ class FdTerm:
             pending_updates.append((space, features_all))
 
         scalars["fd_ema_age"] = float(self.spaces.age)
-        scalars["fd_ratio_mean"] = sum(ratios) / len(ratios)
-        spread = (combined.std(correction=0) / pre_fd_std).item()
-        scalars["fd_reward_spread_ratio"] = spread
-        # The eigensolves are float64 on identical inputs, so ranks should agree
-        # to the bit; any drift shows up here rather than silently desyncing.
-        rank0_combined = broadcast(combined.clone(), from_process=0)
-        scalars["fd_rank_max_diff"] = reduce_max(accelerator, (combined - rank0_combined).abs().max())
-
-        scale = float(config.fd_scale)
-        scalars["fd_scale_effective"] = scale
-        # The dose actually applied to the advantage: the spread the FD term adds
-        # relative to the pre-FD advantage spread.  Defined (as 0) at fd_scale 0.
-        scalars["fd_realized_strength"] = scale * spread
-
+        if ratios:
+            scalars["fd_ratio_mean"] = sum(ratios) / len(ratios)
         advantage_delta = None
-        if fd_reward_is_enabled(config):
+        if combined is not None:
+            spread = (combined.std(correction=0) / pre_fd_std).item()
+            scalars["fd_reward_spread_ratio"] = spread
+            # Identical inputs should give identical rewards across ranks.
+            rank0_combined = broadcast(combined.clone(), from_process=0)
+            scalars["fd_rank_max_diff"] = reduce_max(accelerator, (combined - rank0_combined).abs().max())
+            scale = float(config.fd_scale)
+            scalars["fd_scale_effective"] = scale
+            scalars["fd_realized_strength"] = scale * spread
             advantage_delta = scale * combined[local].to(
                 device=advantages.device, dtype=advantages.dtype
             )

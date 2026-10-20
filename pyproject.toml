@@ -39,7 +39,6 @@ dependencies = [
     "mmdet==3.3.0",
     "mmengine==0.10.7",
     "dreamsim==0.2.1",
-    "vendi-score==0.0.3",
     # Utilities
     "numpy==1.26.4",
     "Pillow==11.1.0",
