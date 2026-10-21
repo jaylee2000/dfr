@@ -2,7 +2,7 @@
 
 The reference distribution of the Fréchet-distance term is the base model
 (LoRA adapters disabled) sampled with exactly the training settings.
-``scripts/fd_prepare.py`` generates those samples once, embeds them with every
+``dfr.fd_prepare`` generates those samples once, embeds them with every
 representation space, computes the per-space null-FD and writes the cache;
 training only reads.  The cache is keyed on the sampling settings alone, never
 on an encoder::
@@ -27,13 +27,14 @@ from pathlib import Path
 
 import torch
 
-import fd_encoders
-import fd_reward
+from dfr import fd_encoders
+from dfr import fd_reward
+
 
 FD_REFERENCE_CACHE_VERSION = 2
 NULL_FD_VERSION = 1
 NULL_FD_SPLIT = "even_odd_epochs"
-PREPARE_COMMAND = "python scripts/fd_prepare.py <config>"
+PREPARE_COMMAND = "python -m dfr.fd_prepare <config>"
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +193,7 @@ def _refusal(config, detail):
         f"FD reference cache problem: {detail}\n"
         f"Expected directory: {fd_reference_dir(config)}\n"
         f"Prepare it once with: {PREPARE_COMMAND} (multi-GPU: accelerate launch --multi_gpu "
-        f"--num_processes N scripts/fd_prepare.py <config>); recompute null_fd.json alone "
+        f"--num_processes N --module dfr.fd_prepare <config>); recompute null_fd.json alone "
         f"with --stats-only."
     )
 

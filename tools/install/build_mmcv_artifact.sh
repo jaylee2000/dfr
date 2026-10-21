@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${repo_root}"
 
 if ! command -v uv >/dev/null 2>&1; then
@@ -10,9 +10,9 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 export RAM_SHARED_ROOT="${RAM_SHARED_ROOT:-${repo_root}/.ram-shared}"
-scripts/ensure_cuda126_toolchain.sh
-# shellcheck source=scripts/mmcv_artifact_config.sh
-source "${repo_root}/scripts/mmcv_artifact_config.sh"
+tools/install/ensure_cuda126_toolchain.sh
+# shellcheck source=tools/install/mmcv_artifact_config.sh
+source "${repo_root}/tools/install/mmcv_artifact_config.sh"
 
 lock_hash="$(sha256sum uv.lock | awk '{print substr($1, 1, 16)}')"
 if [[ -n "${SLURM_TMPDIR:-}" ]]; then
@@ -37,8 +37,8 @@ if [[ -n "${SLURM_TMPDIR:-}" ]]; then
     export RAM_CUDA126_PREFIX="${local_toolchain}"
 fi
 export UV_LINK_MODE=copy
-# shellcheck source=scripts/cuda126_env.sh
-source "${repo_root}/scripts/cuda126_env.sh"
+# shellcheck source=tools/install/cuda126_env.sh
+source "${repo_root}/tools/install/cuda126_env.sh"
 unset VIRTUAL_ENV
 
 artifact_dir="${RAM_SHARED_ROOT}/artifacts/mmcv"
@@ -59,7 +59,7 @@ if [[ -f "${artifact_path}" && -f "${artifact_path}.sha256" ]] && (
     env -u RAM_UV_ENVIRONMENT -u UV_PROJECT_ENVIRONMENT \
         RAM_SHARED_ROOT="${RAM_SHARED_ROOT}" \
         RAM_CUDA126_PREFIX="${shared_toolchain}" \
-        scripts/provision_cuda126.sh
+        tools/install/provision_cuda126.sh
     exit 0
 fi
 
@@ -120,7 +120,7 @@ for architecture in sm_75 sm_80 sm_89 sm_90; do
     fi
 done
 
-"${UV_PROJECT_ENVIRONMENT}/bin/python" scripts/validate_cuda126.py
+"${UV_PROJECT_ENVIRONMENT}/bin/python" tools/install/validate_cuda126.py
 
 if [[ -f conda-cuda126-linux-64.lock ]]; then
     toolchain_lock="${repo_root}/conda-cuda126-linux-64.lock"
@@ -135,7 +135,7 @@ cleanup() {
 trap cleanup EXIT
 mkdir -p "${bundle_stage}/wheels"
 cp "${wheel_path}" "${bundle_stage}/wheels/"
-"${UV_PROJECT_ENVIRONMENT}/bin/python" scripts/mmcv_artifact.py create \
+"${UV_PROJECT_ENVIRONMENT}/bin/python" tools/install/mmcv_artifact.py create \
     --wheel "${bundle_stage}/wheels/$(basename "${wheel_path}")" \
     --output "${bundle_stage}/manifest.json" \
     --uv-lock "${repo_root}/uv.lock" \
@@ -162,4 +162,4 @@ echo "Published canonical MMCV artifact: ${artifact_path}"
 env -u RAM_UV_ENVIRONMENT -u UV_PROJECT_ENVIRONMENT \
     RAM_SHARED_ROOT="${RAM_SHARED_ROOT}" \
     RAM_CUDA126_PREFIX="${shared_toolchain}" \
-    scripts/provision_cuda126.sh
+    tools/install/provision_cuda126.sh

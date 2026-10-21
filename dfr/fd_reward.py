@@ -28,9 +28,9 @@ from dataclasses import dataclass
 import torch
 from accelerate.utils import broadcast
 
-from distributed_metrics import reduce_max
-from dreamsim_diversity import center_by_group
-from fd_encoders import DEFAULT_FD_TYPE, resolve_fd_type
+from dfr.distributed_metrics import reduce_max
+from dfr.dreamsim_diversity import center_by_group
+from dfr.fd_encoders import DEFAULT_FD_TYPE, resolve_fd_type
 
 
 # ---------------------------------------------------------------------------

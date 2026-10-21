@@ -42,7 +42,7 @@ MAX_OBJECTS = 16
 NMS_THRESHOLD = 1.0
 POSITION_THRESHOLD = 0.1
 
-_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 _OBJECT_NAMES_PATH = os.path.join(_REPO_ROOT, "prompts", "geneval", "object_names.txt")
 _MASK2FORMER_CFG = "mask2former_swin-s-p4-w7-224_8xb2-lsj-50e_coco"
 _MASK2FORMER_CKPT = "mask2former_swin-s-p4-w7-224_8xb2-lsj-50e_coco_20220504_001756-c9d0c4f2.pth"

@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ram"
+name = "dfr"
 version = "0.1.0"
 description = "Distribution-based regularization for reward fine-tuning diffusion and flow models"
 readme = "README.md"
@@ -250,7 +250,7 @@ url = "https://www.paddlepaddle.org.cn/packages/stable/cu126/"
 explicit = true
 
 [tool.setuptools.packages.find]
-include = ["reward_models*"]
+include = ["dfr*"]
 
 [tool.black]
 line-length = 120

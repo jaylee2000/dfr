@@ -4,10 +4,10 @@ import argparse
 import os
 from argparse import Namespace
 
-import fd_reference
-import fd_reward
-from config_loader import load_config
-from fd_prepare import resolve_config as resolve_fd_config
+from dfr import fd_reference
+from dfr import fd_reward
+from dfr.config_loader import load_config
+from dfr.fd_prepare import resolve_config as resolve_fd_config
 
 
 def resolve_config(name, cache_dir=None, seed=None, fd_reference_seed=None):

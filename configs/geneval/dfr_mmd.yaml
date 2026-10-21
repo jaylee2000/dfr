@@ -1,7 +1,7 @@
 # DFR-MMD on GenEval (paper Table 1): energy-kernel MMD to the base model on normalized
 # VAE latents, exponent b=1.75, M=8 reference samples per prompt, lambda=0.55, beta=2.
 # Override per run, e.g.:
-#   accelerate launch scripts/training_sd3.py geneval/dfr_mmd --seed 1
+#   accelerate launch --module dfr.training_sd3 geneval/dfr_mmd --seed 1
 extends: ../defaults/geneval_sd3.yaml
 
 reverse_kl_weight: 2.0

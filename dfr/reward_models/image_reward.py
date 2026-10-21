@@ -3,7 +3,7 @@ the upstream `ImageReward` package."""
 
 import os
 
-_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 _MODELS_ROOT = os.path.join(_REPO_ROOT, "models")
 _HF_HOME = os.path.join(_MODELS_ROOT, ".huggingface")
 os.environ.setdefault("HF_HOME", _HF_HOME)

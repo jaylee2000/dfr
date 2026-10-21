@@ -4,8 +4,8 @@ Generates the base-model reference images once, embeds them in the configured
 FD spaces, computes the per-space null-FD and writes the cache read by runs
 that use FD (layout in ``fd_reference.py``)::
 
-    python scripts/fd_prepare.py <config> [--stats-only] [--spaces a,b] [--key value ...]
-    accelerate launch --multi_gpu --num_processes N scripts/fd_prepare.py <config> [...]
+    python -m dfr.fd_prepare <config> [--stats-only] [--spaces a,b] [--key value ...]
+    accelerate launch --multi_gpu --num_processes N --module dfr.fd_prepare <config> [...]
 
 Config resolution is the training one, so the cache key is computed from
 exactly the values training will compute.  Three stages, each skipped when
@@ -34,18 +34,18 @@ import torch
 from accelerate import Accelerator
 from accelerate.utils import InitProcessGroupKwargs
 
-import fd_encoders
-import fd_reference
-import fd_reward
-from batch_sampler import PromptSeedBatchSampler
-from config_loader import load_config, validate_training_options
-from generation import generate_images
-from loss_utils import adapter_host
+from dfr import fd_encoders
+from dfr import fd_reference
+from dfr import fd_reward
+from dfr.batch_sampler import PromptSeedBatchSampler
+from dfr.config_loader import load_config, validate_training_options
+from dfr.generation import generate_images
+from dfr.loss_utils import adapter_host
 
 
 def resolve_config(config, num_processes):
     # Imported here: training_sd3 imports fd_reference at load time.
-    import training_sd3
+    from dfr import training_sd3
 
     validate_training_options(config)
     config = training_sd3.apply_reproducibility_config_defaults(config)
@@ -65,7 +65,7 @@ def missing_epochs(directory, config):
 
 @torch.no_grad()
 def generate_stage(config, accelerator, directory, cache_key, epochs):
-    import training_sd3
+    from dfr import training_sd3
 
     pipe = training_sd3.build_pipeline(config, accelerator)
     pipe.to(accelerator.device)
@@ -270,7 +270,7 @@ def main(config, stats_only=False, spaces=None):
 
 
 if __name__ == "__main__":
-    import training_sd3
+    from dfr import training_sd3
 
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("config", type=str, help="config name (without .yaml)")

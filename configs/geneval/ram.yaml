@@ -1,4 +1,4 @@
 # RAM baseline on GenEval (paper Table 1, RAM beta=1).
 # Override per run, e.g.:
-#   accelerate launch scripts/training_sd3.py geneval/ram --seed 1 --reverse_kl_weight 2
+#   accelerate launch --module dfr.training_sd3 geneval/ram --seed 1 --reverse_kl_weight 2
 extends: ../defaults/geneval_sd3.yaml
